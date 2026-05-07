@@ -1,0 +1,34 @@
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ML artifacts
+dataset/
+results/
+results.archive/
+logs/
+checkpoints/
+models/
+
+# HuggingFace caches
+.cache/
+hf_cache/
+*.bin
+*.safetensors
+
+# TensorBoard and training outputs
+events.out.tfevents.*
+*.h5
+*.keras
+*.ckpt
+
+# Editor/system
+.DS_Store
+Thumbs.db

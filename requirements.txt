@@ -1,0 +1,11 @@
+transformers>=4.44
+peft>=0.12
+trl>=0.10
+accelerate>=0.34
+bitsandbytes>=0.43
+datasets>=2.20
+sentencepiece
+sacrebleu
+scikit-learn
+numpy>=1.23.5,<2.0
+matplotlib>=3.7,<4.0
