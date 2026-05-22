@@ -17,8 +17,18 @@ def run_dir(results_root: str | Path, run_id: str) -> Path:
     return Path(results_root) / f"run_{run_id}"
 
 
-def ensure_run_layout(results_root: str | Path, run_id: str) -> Path:
-    root = run_dir(results_root, run_id)
+def experiment_dir(results_root: str | Path, run_id: str, experiment_id: int) -> Path:
+    return run_dir(results_root, run_id) / f"experiment_{experiment_id}"
+
+
+def ensure_run_layout(
+    results_root: str | Path, run_id: str, experiment_id: int | None = None
+) -> Path:
+    """Create the per-run (and optionally per-experiment) artifact tree."""
+    if experiment_id is None:
+        root = run_dir(results_root, run_id)
+    else:
+        root = experiment_dir(results_root, run_id, experiment_id)
     for sub in ("artifacts", "checkpoints", "logs"):
         (root / sub).mkdir(parents=True, exist_ok=True)
     return root

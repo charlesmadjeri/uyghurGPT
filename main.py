@@ -63,7 +63,7 @@ def parse_args():
         "--batch-size",
         type=int,
         default=1,
-        help="Preflight QLoRA memory check batch size (default 1 for MIG 1g.10gb)",
+        help="Preflight QLoRA memory check batch size (default 1; safe on ~24 GB MIG slice)",
     )
     parser.add_argument(
         "--seq-len",

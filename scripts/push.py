@@ -29,7 +29,11 @@ def main():
     parser.add_argument("--mix", type=int, default=20,
                         help="Percentage of EN-only data mixed into training (0/10/20/50)")
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--time", default="1-00:00:00")
+    parser.add_argument(
+        "--time",
+        default="5-00:00:00",
+        help="Slurm walltime (priority partition cap = 5 days = 5-00:00:00). Default: 5 days.",
+    )
     parser.add_argument("--cpus", type=int, default=8)
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--partition", default="priority")
