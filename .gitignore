@@ -32,3 +32,8 @@ events.out.tfevents.*
 # Editor/system
 .DS_Store
 Thumbs.db
+
+# Secrets — never commit
+.env
+.env.local
+
