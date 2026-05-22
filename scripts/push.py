@@ -44,6 +44,18 @@ def main():
         action="store_true",
         help="Force creation of a new run instead of auto-resuming latest incomplete run",
     )
+    parser.add_argument(
+        "--experiment",
+        type=int,
+        default=1,
+        help="Experiment id passed to main.py (default: 1 = core Qwen Mix-20)",
+    )
+    parser.add_argument(
+        "--mode",
+        default="all",
+        choices=["preprocess", "train", "eval", "all"],
+        help="Pipeline stage(s) to run on the cluster",
+    )
     args = parser.parse_args()
 
     local_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -92,8 +104,9 @@ def main():
         f"--time={args.time} --ntasks=1 --cpus-per-task={args.cpus} "
         f"--gres=gpu:{args.gpus} --partition={args.partition} --requeue "
         f"--output=results/slurm_{slurm_run_label}_%j.out "
-        f"--wrap='{install_cmd}python3 main.py "
-        f"{run_arg}--model {args.model} --mix {args.mix} --epochs {args.epochs}'"
+        f"--wrap='{install_cmd}python3 main.py --experiment {args.experiment} "
+        f"--mode {args.mode} {run_arg}"
+        f"--model {args.model} --mix {args.mix} --epochs {args.epochs}'"
     )
     result = subprocess.run(["ssh", args.server, sbatch_inline], capture_output=True, text=True)
     if result.returncode != 0:

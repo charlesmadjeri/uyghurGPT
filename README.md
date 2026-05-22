@@ -21,7 +21,7 @@ to this scope.
 
 ```
 uyghurGPT/
-├── main.py                  # CLI entrypoint (train + evaluate)
+├── main.py                  # CLI entrypoint (preflight + experiment dispatch)
 ├── docs/
 │   ├── PROJECT.md           # full project plan
 │   ├── RESEARCH.md          # research recap that led to this project
@@ -29,8 +29,9 @@ uyghurGPT/
 ├── scripts/
 │   ├── push.py              # rsync code + submit Slurm job
 │   └── check.py             # monitor jobs + pull results
-├── shared/                  # data / model / eval modules (TBD)
-├── experiments/             # per-experiment entrypoints (TBD)
+├── shared/                  # preflight, data, training, evaluation
+├── experiments/             # per-experiment pipelines (experiment_1 = core)
+├── utils/                   # run I/O, logging
 ├── results/                 # per-run artifacts (gitignored)
 └── requirements.txt
 ```
@@ -67,13 +68,13 @@ python3 -m pip install -r requirements.txt
 ## Run locally (smoke test)
 
 ```bash
-python3 main.py --model qwen --mix 20 --epochs 1 --sample-count 100
+python3 main.py --experiment 1 --model qwen --mix 20 --epochs 1 --sample-count 100
 ```
 
 Run on the full pipeline:
 
 ```bash
-python3 main.py --model qwen --mix 20 --epochs 3
+python3 main.py --experiment 1 --model qwen --mix 20 --epochs 3
 ```
 
 ## Run on compute server
