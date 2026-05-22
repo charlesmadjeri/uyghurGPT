@@ -26,6 +26,7 @@ def run(args) -> None:
         training.train(cfg, root)
 
     if args.mode in ("eval", "all"):
-        raise NotImplementedError(
-            "Experiment 1 evaluation is implemented in the evaluation commit."
-        )
+        stage("Experiment 1 — eval")
+        from shared import evaluation
+
+        evaluation.run_eval(cfg, root)

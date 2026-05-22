@@ -85,7 +85,7 @@ def train(cfg, run_root: Path):
     trainer = SFTTrainer(
         model=model,
         train_dataset=dataset,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
         args=training_args,
         peft_config=peft_config,
         data_collator=collator,
