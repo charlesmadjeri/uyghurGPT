@@ -10,13 +10,9 @@ from transformers import AutoModelForCausalLM
 from transformers.trainer_utils import get_last_checkpoint
 from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
-from shared.data import load_preprocessed, preprocess_and_save
+from shared.data import load_preprocessed
 from shared.models import bnb_config, load_tokenizer, model_id, response_template
 from utils.io import checkpoint_dir, write_run_status
-
-
-def preprocess(cfg, run_root: Path):
-    preprocess_and_save(cfg, run_root)
 
 
 def train(cfg, run_root: Path):

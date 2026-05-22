@@ -60,6 +60,12 @@ def main():
         choices=["preprocess", "train", "eval", "all"],
         help="Pipeline stage(s) to run on the cluster",
     )
+    parser.add_argument(
+        "--sample-count",
+        type=int,
+        default=None,
+        help="Subsample CUTE-P / eval for smoke tests (passed to main.py)",
+    )
     args = parser.parse_args()
 
     local_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -100,6 +106,7 @@ def main():
     if install_cmd:
         install_cmd += " && "
     run_arg = f"--run-id {run_id} " if run_id is not None else ""
+    sample_arg = f"--sample-count {args.sample_count} " if args.sample_count else ""
     job_tag = run_id if run_id is not None else "resume"
     slurm_run_label = run_id if run_id is not None else "resume"
     sbatch_inline = (
@@ -109,7 +116,7 @@ def main():
         f"--gres=gpu:{args.gpus} --partition={args.partition} --requeue "
         f"--output=results/slurm_{slurm_run_label}_%j.out "
         f"--wrap='{install_cmd}python3 main.py --experiment {args.experiment} "
-        f"--mode {args.mode} {run_arg}"
+        f"--mode {args.mode} {run_arg}{sample_arg}"
         f"--model {args.model} --mix {args.mix} --epochs {args.epochs}'"
     )
     result = subprocess.run(["ssh", args.server, sbatch_inline], capture_output=True, text=True)

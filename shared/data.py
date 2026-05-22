@@ -71,16 +71,29 @@ def _flan_count_for_mix(n_parallel: int, mix_pct: int) -> int:
 
 
 def load_flan_en_only(count: int, seed: int, max_pool: int) -> list[dict]:
-    """Sample EN-only FLAN examples for catastrophic-forgetting control."""
+    """Sample EN-only FLAN examples for catastrophic-forgetting control.
+
+    Uses streaming to avoid downloading the entire 2.5 GB FLAN train split
+    (and to dodge HF NonMatchingSplitsSizesError when only some shards are
+    cached). Reservoir-style sampling over the first ``max_pool`` rows.
+    """
     if count <= 0:
         return []
     pool = min(max_pool, max(count, 1))
-    print(f"[data] Loading FLAN pool={pool}, sampling {count} (seed={seed}) ...")
-    ds = load_dataset(FLAN_REPO, split=f"train[:{pool}]")
-    ds = ds.shuffle(seed=seed).select(range(min(count, len(ds))))
+    print(f"[data] Streaming FLAN pool={pool}, sampling {count} (seed={seed}) ...")
+    ds = load_dataset(FLAN_REPO, split="train", streaming=True)
 
-    rows = []
-    for row in ds:
+    import random
+
+    rng = random.Random(seed)
+    indices = set(rng.sample(range(pool), k=min(count, pool)))
+
+    rows: list[dict] = []
+    for i, row in enumerate(ds):
+        if i >= pool:
+            break
+        if i not in indices:
+            continue
         user = (row.get("inputs") or row.get("input") or "").strip()
         assistant = (row.get("targets") or row.get("output") or "").strip()
         if not user or not assistant:

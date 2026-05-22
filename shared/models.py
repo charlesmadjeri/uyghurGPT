@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import torch
-from transformers import AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoTokenizer
 
 MODEL_IDS = {
     "qwen": "Qwen/Qwen2.5-7B-Instruct",
@@ -25,7 +24,15 @@ def response_template(model_choice: str) -> str:
     raise ValueError(f"Unknown model choice: {model_choice}")
 
 
-def bnb_config() -> BitsAndBytesConfig | None:
+def bnb_config():
+    """4-bit NF4 quantization config; returns None when CUDA is unavailable.
+
+    Lazy-imports torch + BitsAndBytesConfig so CPU-only flows (preprocess,
+    preflight checks 1/4) can run without installing torch.
+    """
+    import torch
+    from transformers import BitsAndBytesConfig
+
     if not torch.cuda.is_available():
         return None
     return BitsAndBytesConfig(

@@ -16,9 +16,9 @@ def run(args) -> None:
 
     if args.mode in ("preprocess", "all"):
         stage("Experiment 1 — preprocess")
-        from shared import training
+        from shared import data
 
-        training.preprocess(cfg, root)
+        data.preprocess_and_save(cfg, root)
 
     if args.mode in ("train", "all"):
         stage("Experiment 1 — train")
