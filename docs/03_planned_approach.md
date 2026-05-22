@@ -4,7 +4,14 @@
 > Companion file with canonical tables and rationale: `docs/PROJECT.md`
 > Scope refinement log: `docs/PROJECT_REFINEMENT.md`
 
-This document specifies what we build and train. Sections 1 (data), 2 (model + learning algorithm) and 4 (Day-1 checks) are independent of the GPU allocation. Section 3 (compute) is presented as **two parallel plans** — **Plan A (10 GB MIG `1g.10gb`)** for the current allocation, and **Plan B (20 GB MIG `2g.20gb`)** for the larger slice we are requesting from cluster admins. Section 5 (risk) is the union, with per-plan rows where they diverge.
+> **Compute update (May 2026):** the MIG slice has been upgraded from
+> `1g.10gb` (~10 GB) to **~24 GB**. The two-plan A/B framing below is kept
+> as historical context, but the project now operates under what was
+> originally "Plan B" (full Qwen2.5 + LLaMA-3.1 + CUTE-Llama-P attempt,
+> bf16 LoRA feasible). Canonical thresholds and timings live in
+> `docs/PROJECT.md` §Compute environment.
+
+This document specifies what we build and train. Sections 1 (data), 2 (model + learning algorithm) and 4 (Day-1 checks) are independent of the GPU allocation. Section 3 (compute) is presented as **two parallel plans** — **Plan A (10 GB MIG `1g.10gb`)** for the now-deprecated original allocation, and **Plan B (20 GB MIG `2g.20gb` / current ~24 GB)** for the larger slice. Section 5 (risk) is the union, with per-plan rows where they diverge.
 
 The selection between A and B is made at training-launch time via a single CLI flag (`--slice-size {10g, 20g}`); the data pipeline, model identity, evaluation protocol and success criteria are identical.
 
@@ -133,7 +140,7 @@ If after the three "free-win" knobs Qwen forward still exceeds 9 GB peak, the ne
 **What Plan A explicitly drops or demotes.**
 
 - **LLaMA-3.1-8B fine-tune.** The 8 B model OOMs during weight init at 8.5 GB before any of the activation-saving knobs apply. We could rescue it via CPU-offload of `embed_tokens` and `lm_head` (knob 8 in our memory analysis: saves ~2 GB on GPU, costs ~5× forward-pass latency). At ~5× slower, the fine-tune wall-clock blows the timeline → **drop from Plan A**. Zero-shot LLaMA-3.1-8B as a baseline is still possible because inference does not require optimizer state.
-- **CUTE-Llama-P baseline.** Structurally impossible to load on 10 GB at any QLoRA config — its expanded vocabulary (~155 K tokens) means the unquantized embedding tables alone are ~2.5 GB in bf16. CPU offload makes it loadable but inference becomes prohibitively slow. **Declare baseline FAILED per PROJECT.md §Baseline Risk and use zero-shot Qwen2.5 + zero-shot LLaMA-3.1 as the only baselines.**
+- **CUTE-Llama-P baseline.** Structurally impossible to load on 10 GB at any QLoRA config — its expanded vocabulary (~155 K tokens) means the unquantized embedding tables alone are ~2.5 GB in bf16. CPU offload makes it loadable but inference becomes prohibitively slow. **Plan-A fallback (historical):** declare baseline FAILED and use zero-shot Qwen2.5 + zero-shot LLaMA-3.1 as the only baselines. *(Superseded: on the current ~24 GB slice, CUTE-Llama-P loads in 4-bit NF4 and is back as a core baseline — see `PROJECT.md` §CUTE-Llama-P Baseline.)*
 - **Stretch ablation cells.** Mix-{0, 10, 50} on Qwen are still runnable serially (4 cells × ~28 h ≈ 4.7 days), but not in parallel because we only have 3 concurrent-job quota on the cluster. Drop to 2 cells (Mix-0 and Mix-50) if timeline gets tight.
 
 ### 3.B — Plan B: 20 GB MIG `2g.20gb` (requested from admins)
@@ -207,10 +214,10 @@ Risks marked **(A)** apply to Plan A only; **(B)** to Plan B only; otherwise bot
 | Qwen forward still OOMs after Plan A knobs (~0.4 GB shortage) | Low (≈ 15 %)                          | Medium         | Drop `seq_len` 512 → 384 (knob 4 in memory analysis); ~5 % CUTE-P truncation                                                                         |
 | Qwen forward OOMs even at `seq_len=384`                       | Very low (≈ 5 %)                      | High (A)       | Drop to `seq_len=256` and document the data-truncation cost; or escalate Plan B request                                                              |
 | Admin denies / delays `2g.20gb` request                       | Medium (≈ 40 %)                       | Medium         | Plan A is fully scoped and runnable on current allocation; project completes core experiment regardless                                              |
-| **(B)** CUTE-Llama-P still won't load on 20 GB                | Low (≈ 15 %)                          | Low            | Already documented as high-risk baseline (PROJECT.md §Baseline Risk) with hard 2-day budget and zero-shot LLaMA-3.1 fallback                         |
+| **(B)** CUTE-Llama-P still won't load on the 24 GB slice      | Very low (preflight check 5 PASS)     | Low            | Fallback to zero-shot-only baselines documented in `PROJECT.md` §CUTE-Llama-P Baseline                                                              |
 | Tokenizer fragments Uyghur (byte-level)                       | Already resolved — Day-1 check 1 PASS | Low            | None needed                                                                                                                                          |
 | **(A)** LLaMA-3.1 fine-tune dropped from scope                | Certain (Plan A)                      | Medium         | Zero-shot LLaMA-3.1 is still a viable cross-architecture baseline; demotion documented in the report                                                 |
-| **(A)** CUTE-Llama-P baseline dropped                         | Certain (Plan A)                      | Low            | Contribution reframes from "LoRA vs. CPT" to "LoRA vs. zero-shot multilingual LLM"; still publishable (per PROJECT.md §Baseline Risk fallback plan)  |
+| **(A)** CUTE-Llama-P baseline dropped                         | Plan A only (historical)              | Low            | Contribution reframes from "LoRA vs. CPT" to "LoRA vs. zero-shot multilingual LLM"; still publishable (per PROJECT.md §CUTE-Llama-P Baseline fallback) |
 | EN side of CUTE-P is auto-translated from ZH                  | Certain                               | Low (expected) | Document as a known data limitation in the final report; framed honestly as "best-effort given the only available large-scale EN↔UG parallel corpus" |
 | UG→EN >> EN→UG (expected asymmetry)                           | Certain                               | Low (expected) | Pre-empt in presentation; report directions separately, never averaged (PROJECT.md §Expected Result Asymmetry)                                       |
 | Wall-clock exceeds `priority` 5-day cap                       | Very low (any single run is < 30 h)   | Low            | Submit on `priority` first; if preempted, requeue or fall back to `scavenger`                                                                        |
@@ -293,7 +300,7 @@ Risks marked **(A)** apply to Plan A only; **(B)** to Plan B only; otherwise bot
 
 - Lead with: Plan A is fully scoped and runnable **today** on the current allocation. Plan B is what we *would* run if admins grant a `2g.20gb` slice (request pending).
 - The decision between A and B is made at training-launch time, not now. A single CLI flag (`--slice-size`) selects the config; the data pipeline, model identity, and evaluation are identical.
-- What we lose under Plan A: LLaMA-3.1-8B fine-tune (stretch goal anyway) and CUTE-Llama-P baseline (declared FAILED per `PROJECT.md` §Baseline Risk). The core experiment — Qwen2.5 Mix-20 vs. zero-shot Qwen on FLORES + WCM-v2 — ships either way.
+- What we lost under the historical Plan A: LLaMA-3.1-8B fine-tune (stretch goal anyway) and CUTE-Llama-P baseline. On the current 24 GB slice both are back in scope (LLaMA fine-tune remains stretch, CUTE-Llama-P is a planned core baseline — see `PROJECT.md` §CUTE-Llama-P Baseline). The core experiment — Qwen2.5 Mix-20 vs. zero-shot Qwen on FLORES + WCM-v2 — ships either way.
 - Anticipated Q: "What if the 20 GB request is denied?" → Plan A is the plan. We lose stretch goals; the core contribution and evaluation are unchanged.
 - Anticipated Q: "Why is one run 28 h and the other 16–20 h?" → Plan A uses `bsz=1, grad_accum=32` to fit memory; the optimizer overhead per effective batch is higher than Plan B's `bsz=4, grad_accum=4`, even though the effective batch size is the same.
 

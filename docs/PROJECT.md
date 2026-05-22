@@ -1,7 +1,7 @@
 # DL Final Project — LLM Fine-tuning for Bilingual Uyghur/English
 
 > Course: Deep Learning — Jönköping University
-> Compute: 1× **NVIDIA A100 80GB PCIe** per worker on `slurm.hj.se` (MIG `1g.10gb` slice assigned per job — see §Compute environment)
+> Compute: 1× **NVIDIA A100 80GB PCIe** per worker on `slurm.hj.se` (~**24 GB MIG slice** assigned per job — see §Compute environment)
 > Dataset: CUTE corpus (Zhuang & Sun, COLING 2025)
 > Status: Track 2 — LLM Instruction Fine-tuning (scoped May 2026 — see `PROJECT_REFINEMENT.md`)
 
@@ -18,7 +18,6 @@ Fine-tune **Qwen2.5-7B-Instruct with Mix-20 QLoRA** and evaluate on **FLORES-200
 - Fine-tune LLaMA-3.1-8B-Instruct (Mix-20) and compare to Qwen2.5 fine-tune
 - Ablation: Mix-{0, 10, 50} on Qwen2.5-7B
 - MiLiC-Eval (9-task bilingual benchmark) — deferred to final report if time allows
-- CUTE-Llama-P baseline — see §Baseline risk below
 
 > **Scope discipline:** the design presentation and interim milestones are assessed against the core experiment only. Stretch goals are reported as "completed" or "not reached" in the final report. Examiners are told upfront which is which.
 
@@ -31,36 +30,32 @@ These checks must pass before committing compute to any fine-tuning run. If any 
 | Check | Command / Method | Pass Condition | Fallback if Fail |
 |-------|-----------------|----------------|-----------------|
 | **Tokenizer — Uyghur segmentation** | Encode 50 Uyghur sentences from CUTE-P; compute token/byte ratio | Ratio < 0.6 (reasonable segmentation, not byte-fallback) | Re-evaluate "no vocabulary surgery" decision; consult `PROJECT_REFINEMENT.md` §Rec-4 |
-| **QLoRA memory fit — Qwen2.5-7B** | Load 4-bit NF4 model + bf16 adapters + dummy forward pass on MIG 1g.10gb | Peak VRAM < 9.5 GB (leave 0.5 GB headroom) | Reduce LoRA rank, disable flash-attention, or request larger MIG slice from admins |
+| **QLoRA memory fit — Qwen2.5-7B** | Load 4-bit NF4 model + bf16 adapters + dummy forward pass on the assigned MIG slice (~24 GB) | Peak VRAM < 22 GB (leave ~2 GB headroom) | Reduce LoRA rank, disable flash-attention, or request larger MIG slice from admins |
 | **QLoRA memory fit — LLaMA-3.1-8B** | Same as above | Same threshold | Same fallback |
 | **CUTE-P EN+UG download + format** | Download, spot-check 100 lines, verify UTF-8 + Arabic script integrity | No mojibake, lines align EN↔UG | Re-download; check HuggingFace dataset viewer |
-| **CUTE-Llama-P load test** | Attempt to load model weights + run 5 FLORES sentences | Inference produces Uyghur output | Declare baseline FAILED — use zero-shot baselines only (see §Baseline risk) |
+| **CUTE-Llama-P load test** | Attempt to load model weights + run 5 FLORES sentences | Inference produces Uyghur output | Fall back to zero-shot baselines only (see §CUTE-Llama-P Baseline) |
 
 Record results of all checks in `results/preflight/preflight_report.md` before submitting any Slurm training job.
 
 ---
 
-## Baseline Risk — CUTE-Llama-P
+## CUTE-Llama-P Baseline
 
-**Status: HIGH RISK. Budget 2 days maximum. Hard fallback in place.**
+**Status: planned core baseline on the 24 GB MIG slice. Preflight check 5 has already loaded the model and produced Uyghur Arabic-script output for ≥3/5 test sentences. Fallback to zero-shot-only baselines remains documented for completeness.**
 
-CUTE-Llama-P (Llama2-7B + vocabulary expansion + continued pretraining on CUTE-P) is the primary baseline from the paper. The paper only publishes ZH→UG numbers; we intended to run inference on FLORES-200 EN↔UG ourselves.
+CUTE-Llama-P (Llama2-7B + vocabulary expansion + continued pretraining on CUTE-P) is the comparison baseline from the paper. The paper only publishes ZH→UG numbers; we run inference on FLORES-200 EN↔UG ourselves.
 
-**Why this is risky:**
-- Custom vocabulary expansion means the model weights are not drop-in compatible with standard `transformers` loading without the authors' tokenizer files
-- The paper's GitHub (`CMLI-NLP/CUTE`) may not ship a ready-to-use inference checkpoint
-- Debugging a custom tokenizer + architecture mismatch can consume unbounded time
+**Known constraints (not blockers on 24 GB):**
+- Expanded ~155 K-token vocabulary → ~2.5 GB bf16 embedding tables; loads cleanly in 4-bit NF4 within the 24 GB slice.
+- Base LM (not instruct), so it is prompted with **few-shot continuation** (`English: …\nUyghur:`) rather than the chat template used for Qwen/LLaMA. This is a known protocol difference, documented in the report.
+- The reported ZH→UG paper numbers are not used for direct comparison — direction mismatch.
 
 **Protocol:**
-1. Allocate **Day 1 afternoon + Day 2 morning** exclusively to loading CUTE-Llama-P (pre-flight check above)
-2. If inference produces valid Uyghur output → proceed as planned baseline
-3. If not resolved within the 2-day budget → **declare baseline FAILED, document the attempt, and proceed with zero-shot baselines only**
+1. Confirm preflight check 5 PASS on the current cluster (already PASS in `results/preflight/check5.json`).
+2. Evaluate on FLORES-200 EN↔UG and WCM-v2 using the same references and metrics as the other variants. Report its prompt style alongside the score.
 
-**Fallback baseline plan (if CUTE-Llama-P fails):**
-- Primary baseline: **zero-shot Qwen2.5-7B-Instruct** (already planned as secondary baseline)
-- Secondary baseline: **zero-shot LLaMA-3.1-8B-Instruct** (already planned as tertiary)
-- The contribution framing shifts from "LoRA vs. continued pretraining" to "LoRA instruction tuning vs. zero-shot multilingual LLMs" — this is still a valid and publishable comparison
-- Document the CUTE-Llama-P failure attempt honestly in the final report's limitations section
+**Fallback (kept for completeness, no longer expected):**
+- If a future cluster change makes loading impossible again, fall back to zero-shot Qwen2.5 and zero-shot LLaMA-3.1 only. The contribution framing then narrows to "LoRA instruction tuning vs. zero-shot multilingual LLMs" — still valid.
 
 ---
 
@@ -93,7 +88,7 @@ All datasets and models used in this project are publicly accessible. Access not
 | **MiLiC-Eval** | Multi-task bilingual eval *(stretch)* | HuggingFace (gated) | Gated (instant) | Same gating as WCM-v2; defer to final report |
 | **Qwen2.5-7B-Instruct** | Primary model | [`Qwen/Qwen2.5-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) | Apache 2.0 | ~15 GB (bf16); ~8 GB (4-bit NF4) |
 | **LLaMA-3.1-8B-Instruct** | Secondary model + zero-shot baseline | [`meta-llama/Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) | Gated (Meta license, instant) | ~16 GB (bf16); ~8 GB (4-bit NF4) |
-| **CUTE-Llama-P** | Comparison baseline *(high risk — see §Baseline risk)* | CMLI-NLP GitHub | Open | Custom vocabulary; 2-day budget; hard fallback in place |
+| **CUTE-Llama-P** | Comparison baseline | CMLI-NLP GitHub | Open | Custom 155 K vocabulary; fits in 4-bit NF4 on the 24 GB slice; few-shot prompted (base LM) |
 | **FLAN subset** | Catastrophic forgetting prevention | [`Muennighoff/flan`](https://huggingface.co/datasets/Muennighoff/flan) | Open | ~50K samples for Mix-20 |
 
 **Notes:**
@@ -141,15 +136,15 @@ Neither Qwen2.5 nor LLaMA-3.1 undergoes vocabulary expansion or tokenizer modifi
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Method | QLoRA | 4-bit NF4 base, bf16 adapters, gradient checkpointing |
-| LoRA rank | 16 | Reduce to 8 if VRAM budget exceeded |
+| LoRA rank | 16 | Can be raised to 32 on the 24 GB slice if headroom allows |
 | LoRA alpha | 32 | |
-| LoRA target modules | `q_proj, v_proj` | Standard; expand to `k_proj, o_proj` if rank is reduced |
+| LoRA target modules | `q_proj, v_proj` | Expand to `k_proj, o_proj` on 24 GB for better adaptation |
 | Epochs | 3 | |
-| Batch size | 4 (effective 16 with grad accum ×4) | Tune based on VRAM headroom |
+| Batch size | 4 (effective 16 with grad accum ×4) | 24 GB allows raising to 8 (effective 32) for faster epochs |
 | Max sequence length | 512 tokens | Covers >95% of CUTE-P document lengths |
-| Optimizer | paged AdamW 8-bit | Required for QLoRA memory budget |
+| Optimizer | paged AdamW 8-bit | Recommended for QLoRA; bf16 LoRA can use `adamw_torch` |
 | LR | 2e-4 | Cosine decay, warmup 3% |
-| bf16 LoRA flag | `--bf16-lora` | Activates if/when admins grant full A100; same code path |
+| bf16 LoRA flag | `--bf16-lora` | Now fits on 24 GB slice; ~2× faster than QLoRA |
 
 ---
 
@@ -212,13 +207,16 @@ Relative to the CUTE paper (Zhuang & Sun, COLING 2025):
 
 ## Project Timeline
 
+Order is set so we always have **comparable results** in hand before moving
+on to the next harder block.
+
 | Week | Milestone | Type |
 |------|-----------|------|
-| 1 | Pre-flight checks (tokenizer, VRAM, CUTE-Llama-P load test, CUTE-P download); zero-shot baselines on FLORES-200 + WCM-v2 | **Core** |
-| 2 | QLoRA fine-tune Qwen2.5-7B Mix-20; evaluate on FLORES-200 + WCM-v2; perplexity check | **Core** |
-| 3 | Design presentation; if core complete — attempt QLoRA fine-tune LLaMA-3.1-8B Mix-20 | Core + Stretch |
-| 4 | Ablation runs Mix-{0,10,50} on Qwen2.5 (stretch); MiLiC-Eval if time allows | Stretch |
-| 5 | Analysis, asymmetry discussion, write-up | **Core** |
+| 1 | Pre-flight checks (tokenizer, VRAM, CUTE-Llama-P load test, CUTE-P download); evaluation harness runs on **zero-shot Qwen2.5** and **zero-shot LLaMA-3.1** → first FLORES-200 + WCM-v2 numbers in the artifacts | **Core** |
+| 2 | QLoRA fine-tune Qwen2.5-7B Mix-20; evaluate on FLORES-200 + WCM-v2; perplexity check → fine-tuned vs zero-shot delta reported | **Core** |
+| 3 | Add **CUTE-Llama-P** to the eval (few-shot prompted) and complete the full baseline table; design presentation. Optionally start LLaMA-3.1-8B QLoRA Mix-20 | Core + Stretch |
+| 4 | Ablation Mix-{0,10,50} on Qwen2.5 (stretch); LLaMA-3.1 fine-tune finishes; MiLiC-Eval if time allows | Stretch |
+| 5 | Analysis, EN↔UG asymmetry discussion, write-up | **Core** |
 
 ---
 
@@ -232,31 +230,40 @@ Cluster: **`slurm.hj.se`** (Jönköping University), accessed via SSH alias `ju-
 | Per-node CPU | 16 cores |
 | Per-node RAM | 128 GB |
 | Per-node GPU (physical) | **NVIDIA A100 80GB PCIe** |
-| Per-job GPU (effective) | **MIG `1g.10gb`** — confirmed via `nvidia-smi -L` inside an `srun` job (~10 GB VRAM visible) |
+| Per-job GPU (effective) | **~24 GB MIG slice** — confirmed via `nvidia-smi -L` inside an `srun` job. Replaces the earlier `1g.10gb` (~10 GB) profile after the admin-side upgrade. |
 | Partition `priority` | MaxTime 5 days, default 2 h |
 | Partition `scavenger` | Unlimited time, preemptible |
 | Account / QoS | `tmls22` / `normal` |
 | Concurrency | Up to 7 parallel single-GPU jobs |
+| `scripts/push.py` default `--time` | `5-00:00:00` (5 days — the full `priority` partition cap) |
 
-**MIG implications:**
-- **bf16 LoRA on a 7–8B model does not fit.** A bf16 7B base alone is ~14 GB. Default to **QLoRA** (4-bit NF4 base + bf16 adapters + gradient checkpointing), which fits in ~6–9 GB.
-- A single `--partition priority` job (5-day cap) comfortably covers any one QLoRA fine-tune (~16–28 h for 3 epochs on full CUTE-P).
-- The full ablation (Mix-{0,10,20,50} × {Qwen, LLaMA} = 8 jobs) can run in parallel across 8 workers if stretch goals are reached.
-- **TODO — contact cluster admins:** request `3g.40gb` or `7g.80gb` MIG profile, or full A100 access. If granted, enable bf16 LoRA via `--bf16-lora` flag — same code path, ~2× faster.
-- **For each new job:** read `nvidia-smi -L` at startup. Expected: `MIG 1g.10gb Device 0`. If slice changes, update training config before proceeding.
+**MIG implications (24 GB slice):**
+- **QLoRA stays the default** (4-bit NF4 base + bf16 adapters + gradient checkpointing) — peak VRAM ~8–12 GB, leaves comfortable headroom.
+- **bf16 LoRA on a 7–8B model now fits** (bf16 7B ≈ 14 GB + bf16 adapters + activations ≈ 18–22 GB). Enable via `--bf16-lora` for ~2× faster training; same code path.
+- A single `--partition priority` job at the push.py default (5 days, the partition cap) comfortably covers `preprocess + train + eval` for one Qwen QLoRA Mix-20 fine-tune (~6–10 h for 3 epochs on full CUTE-P + ~1 h evaluation). The headroom absorbs requeues, longer eval, or running multiple Mix variants in one job.
+- Full ablation (Mix-{0,10,20,50} × {Qwen, LLaMA} = 8 jobs) can run in parallel across 7 workers (one queued) if stretch goals are reached.
+- **For each new job:** read `nvidia-smi -L` at startup. Expected: ~24 GB visible. If the slice profile changes, update batch size / sequence length before proceeding.
 
 ---
 
 ## Per-run Artifacts
 
-Each run writes to `results/run_<run_id>/`:
+Each run writes to `results/run_<run_id>/experiment_<N>/`:
 - `artifacts/run_config.json`, `run_status.json`
 - `artifacts/eval_<benchmark>.json` per evaluation benchmark
 - `artifacts/training_history.csv`
+- `artifacts/preprocessed_dataset/` — HF-saved preprocess output
 - `checkpoints/<model_label>/` — LoRA adapters per epoch
 - `logs/<model_label>/` — TensorBoard / TRL training logs
-- `preflight/preflight_report.md` — Day 1 sanity check results (first run only)
+
+Preflight artifacts (run once per cluster, not per experiment) live under
+`results/preflight/`: `checkN.json`, `preflight_report.md`,
+`cute_p_sample/`.
+
+`run_status.json` is updated as the pipeline progresses (`started` →
+`preprocessed` → `training` → `trained` → `evaluating` → `evaluated`).
+`scripts/check.py` reads it and prints the current stage of the latest run.
 
 ---
 
-*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Core experiment: Qwen2.5-7B-Instruct QLoRA Mix-20 evaluated on FLORES-200 + WCM-v2. CUTE-Llama-P baseline flagged high-risk with 2-day hard budget and documented fallback. EN↔UG asymmetry documented as expected outcome. MiLiC-Eval deferred to stretch. All stretch goals gated behind core completion.*
+*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Core experiment: Qwen2.5-7B-Instruct QLoRA Mix-20 evaluated on FLORES-200 + WCM-v2. CUTE-Llama-P is back as a planned core baseline now that the 24 GB MIG slice and preflight check 5 confirm it loads and produces Uyghur output (few-shot prompted; protocol difference noted). EN↔UG asymmetry documented as expected outcome. MiLiC-Eval deferred to stretch. All stretch goals gated behind core completion. **Compute update:** MIG slice upgraded from `1g.10gb` (~10 GB) to ~24 GB — bf16 LoRA now feasible; QLoRA remains default; thresholds and headroom revised accordingly.*

@@ -1,20 +1,26 @@
 """UyghurGPT — bilingual Uyghur/English LLM fine-tuning.
 
-CLI entrypoint. Dispatches to one of five stages:
-  --mode preflight     Day-1 sanity checks (tokenizer, QLoRA fit, data, baseline)
-  --mode preprocess    Download CUTE-P + format as instruction pairs
-  --mode train         LoRA fine-tune the chosen base model
-  --mode eval          Evaluate the fine-tuned adapter on FLORES-200, WCM-v2, MiLiC-Eval
-  --mode all           Run preprocess + train + eval sequentially (no preflight)
+CLI entrypoint:
+  --mode preflight              Day-1 sanity checks (shared/preflight.py)
+  --experiment 1 --mode <stage> Core experiment (experiments/experiment_1/)
+
+Stages for experiments: preprocess | train | eval | all
 
 See docs/PROJECT.md for the full plan.
 """
 
 import argparse
+import sys
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="UyghurGPT — fine-tune + evaluate")
+    parser.add_argument(
+        "--experiment",
+        type=int,
+        default=None,
+        help="Experiment id (1 = core Qwen Mix-20 QLoRA). Omit for legacy top-level modes.",
+    )
     parser.add_argument(
         "--mode",
         default="all",
@@ -44,42 +50,44 @@ def parse_args():
     parser.add_argument(
         "--run-id",
         default=None,
-        help="Existing run id to resume; if not set, a new run is created",
+        help="Existing run id to resume; if not set, a new run id is created",
     )
     parser.add_argument("--results-root", default="results")
 
-    # Preflight-only options
     parser.add_argument(
         "--check",
         default="all",
-        help="Which Day-1 preflight check to run: 'all', a single id (e.g. '3'), or a comma list (e.g. '1,2,4,5')",
+        help="Preflight only: 'all', a single id (e.g. '3'), or comma list (e.g. '1,2,4,5')",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=1,
-        help="Per-device batch size for QLoRA memory checks (default 1 matches PROJECT.md on MIG 1g.10gb)",
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Preflight QLoRA memory check batch size (default 1; safe on ~24 GB MIG slice)",
     )
     parser.add_argument(
-        "--seq-len", type=int, default=512,
-        help="Max sequence length for QLoRA memory checks (default 512)",
+        "--seq-len",
+        type=int,
+        default=512,
+        help="Preflight QLoRA memory check sequence length",
     )
     return parser.parse_args()
 
 
 def run_preflight(args):
     from shared import preflight
+
     preflight.run(args)
 
 
-def run_preprocess(args):
-    raise NotImplementedError("preprocess stage not implemented yet")
+def run_experiment(args):
+    if args.experiment == 1:
+        from experiments.experiment_1 import run as exp1
 
-
-def run_train(args):
-    raise NotImplementedError("train stage not implemented yet")
-
-
-def run_eval(args):
-    raise NotImplementedError("eval stage not implemented yet")
+        exp1.run(args)
+        return
+    print(f"Unknown experiment id: {args.experiment}", file=sys.stderr)
+    sys.exit(2)
 
 
 def main():
@@ -89,14 +97,16 @@ def main():
         run_preflight(args)
         return
 
-    if args.mode in ("preprocess", "all"):
-        run_preprocess(args)
+    if args.experiment is not None:
+        run_experiment(args)
+        return
 
-    if args.mode in ("train", "all"):
-        run_train(args)
-
-    if args.mode in ("eval", "all"):
-        run_eval(args)
+    print(
+        "No --experiment set. Use --experiment 1 for the core pipeline "
+        "or --mode preflight for Day-1 checks.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 if __name__ == "__main__":

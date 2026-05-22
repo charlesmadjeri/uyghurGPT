@@ -23,32 +23,36 @@ The revised plan defines a strict two-tier structure:
   ablation variants, MiLiC-Eval.
 
 ### Why
-The original scope was too large for the compute constraints (MIG 1g.10gb per job).
-An 8-cell ablation × 2 models serial on a single worker exceeds the 5-day priority
-partition limit. More importantly, course examiners reward a clean, complete, well-analysed
-core experiment over a partially executed grand plan. Presenting an incomplete ablation
-at the design stage creates expectations the project may not meet.
+The original scope was too large for the compute constraints (originally MIG
+`1g.10gb` per job; later upgraded to a ~24 GB slice — see `docs/PROJECT.md`
+§Compute environment). Even with the larger slice an 8-cell ablation × 2 models
+serial on a single worker exceeds the 5-day priority partition limit. More
+importantly, course examiners reward a clean, complete, well-analysed core
+experiment over a partially executed grand plan. Presenting an incomplete
+ablation at the design stage creates expectations the project may not meet.
 
 ---
 
-## 2. CUTE-Llama-P Demoted to Stretch Baseline
+## 2. CUTE-Llama-P Baseline Status (originally demoted, now back as core)
 
 ### What changed
-The original plan set CUTE-Llama-P as the **primary baseline**, to be reproduced
-by running inference on FLORES-200 EN↔UG ourselves.
+- **Original plan:** CUTE-Llama-P was the primary baseline.
+- **First refinement:** demoted to a *stretch* baseline with a 2-day load
+  budget and a documented fallback to zero-shot-only baselines, because
+  the MIG `1g.10gb` (~10 GB) slice could not load the model's expanded
+  ~155 K-token embedding tables and the load story was unknown.
+- **Current state (May 2026, 24 GB MIG slice):** preflight check 5 has
+  already loaded the model in 4-bit NF4 and produced Uyghur Arabic-script
+  output for ≥3/5 sentences. The "high-risk" framing and the 2-day budget
+  are dropped. CUTE-Llama-P is a planned core baseline again, evaluated on
+  the same FLORES-200 + WCM-v2 test sets as the instruct models, with a
+  base-LM-appropriate few-shot prompt (documented as a protocol
+  difference, not hidden).
 
-The revised plan demotes it to a **stretch baseline** with an explicit fallback:
-if loading the model fails or takes more than 2 days of engineering time, it is dropped
-from the comparison entirely.
-
-### Why
-CUTE-Llama-P uses an expanded vocabulary and a custom tokenizer. Loading it with
-standard HuggingFace `AutoModel` is not guaranteed. The paper only published
-ZH→UG numbers; EN↔UG inference requires verifying the model produces coherent output
-in a direction never evaluated by the authors. The direction mismatch already limits
-the comparison's scientific value. The zero-shot Qwen2.5 and Llama-3.1 baselines are
-sufficient to isolate the contribution of LoRA fine-tuning, which is the core
-research question.
+### Why the fallback is still recorded
+If a future cluster change makes loading impossible again, the fallback
+plan (zero-shot Qwen2.5 + zero-shot LLaMA-3.1 only) is still valid and
+documented. It is no longer the expected path.
 
 ---
 
@@ -71,10 +75,12 @@ without being caught until late:
   surgery" design decision is flawed and must be revisited before wasting compute
   on a broken fine-tune.
 
-- **Memory risk**: QLoRA on a MIG 1g.10gb slice is expected to fit (~6–9 GB),
-  but this depends on sequence length, batch size, and gradient checkpointing
-  configuration. A failed memory test on day 1 is far better than a failed training
-  job on day 3.
+- **Memory risk**: QLoRA on the ~24 GB MIG slice is expected to fit (~8–12 GB)
+  with comfortable headroom; bf16 LoRA (~18–22 GB) also fits. On the earlier
+  `1g.10gb` (~10 GB) profile QLoRA was tight (~6–9 GB) and bf16 LoRA was
+  infeasible. Either way the budget depends on sequence length, batch size,
+  and gradient checkpointing configuration. A failed memory test on day 1 is
+  far better than a failed training job on day 3.
 
 Catching either issue on day 1 allows a week-1 fix. Catching it on week 2 or 3
 would derail the timeline.

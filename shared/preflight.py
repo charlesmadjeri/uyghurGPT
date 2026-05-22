@@ -217,7 +217,7 @@ def _qlora_memory_check(check_id, name, model_id, args):
     r = _start(
         check_id,
         name,
-        "Peak VRAM < 9.5 GB (0.5 GB headroom on MIG 1g.10gb)",
+        "Peak VRAM < 22 GB (~2 GB headroom on the ~24 GB MIG slice)",
         "Reduce LoRA rank to 8, drop seq_len to 384, request larger MIG slice from admins",
     )
     try:
@@ -290,10 +290,10 @@ def _qlora_memory_check(check_id, name, model_id, args):
             "total_params": total,
             "trainable_pct": round(100 * trainable / total, 4),
             "peak_vram_gb": round(peak_gb, 3),
-            "threshold_gb": 9.5,
+            "threshold_gb": 22.0,
         }
-        r["status"] = "PASS" if peak_gb < 9.5 else "FAIL"
-        print(f"[check{check_id}] Peak VRAM = {peak_gb:.3f} GB (threshold 9.5) -> {r['status']}")
+        r["status"] = "PASS" if peak_gb < 22.0 else "FAIL"
+        print(f"[check{check_id}] Peak VRAM = {peak_gb:.3f} GB (threshold 22.0) -> {r['status']}")
     except Exception as e:
         if _is_cuda_oom(e):
             peak_gb = (
@@ -307,7 +307,7 @@ def _qlora_memory_check(check_id, name, model_id, args):
                 "model_id": model_id,
                 "oom": True,
                 "peak_vram_gb_at_oom": round(peak_gb, 3),
-                "threshold_gb": 9.5,
+                "threshold_gb": 22.0,
                 "batch_size": getattr(args, "batch_size", None),
                 "seq_len": getattr(args, "seq_len", None),
             }
@@ -362,7 +362,7 @@ def check5_cute_llama(args):
         5,
         "CUTE-Llama-P load + inference test",
         "Model loads and produces Uyghur Arabic-script output for >=3/5 sentences",
-        "Declare baseline FAILED; use zero-shot baselines only (PROJECT.md §Baseline Risk)",
+        "Fallback to zero-shot baselines only (PROJECT.md §CUTE-Llama-P Baseline)",
     )
     try:
         import torch
