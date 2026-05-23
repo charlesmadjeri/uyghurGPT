@@ -13,7 +13,13 @@ from transformers.trainer_utils import get_last_checkpoint
 from trl import SFTConfig, SFTTrainer
 
 from shared.data import load_preprocessed
-from shared.models import bnb_config, load_tokenizer, model_id, response_template
+from shared.models import (
+    attn_implementation,
+    bnb_config,
+    load_tokenizer,
+    model_id,
+    response_template,
+)
 from utils.io import checkpoint_dir, write_run_status
 
 
@@ -213,12 +219,13 @@ def train(cfg, run_root: Path):
         )
 
     quant = bnb_config()
-    print(f"[train] Loading {mid} (QLoRA={quant is not None}) ...")
+    attn = attn_implementation()
+    print(f"[train] Loading {mid} (QLoRA={quant is not None}, attn={attn}) ...")
     model = AutoModelForCausalLM.from_pretrained(
         mid,
         quantization_config=quant,
         device_map={"": 0} if torch.cuda.is_available() else None,
-        attn_implementation="eager",
+        attn_implementation=attn,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         low_cpu_mem_usage=True,
     )
@@ -276,7 +283,9 @@ def train(cfg, run_root: Path):
             print("[train] tensorboard/tensorboardX not installed; disabling TB logging.")
             report_to = "none"
 
-    smoke = cfg.sample_count is not None
+    # Only treat as smoke (max_steps=10) for tiny sample sizes, not for
+    # real subsampled runs like --sample-count 100000.
+    smoke = cfg.sample_count is not None and cfg.sample_count <= 1000
     sft_kwargs = dict(
         output_dir=str(ckpt_root),
         per_device_train_batch_size=cfg.per_device_train_batch_size,
@@ -303,6 +312,19 @@ def train(cfg, run_root: Path):
             sft_kwargs["assistant_only_loss"] = True
     else:
         sft_kwargs["dataset_text_field"] = "text"
+
+    # Sequence packing: concatenate multiple short rows into a single
+    # max_length chunk, drastically increasing throughput on corpora
+    # like CUTE-P whose median pair is well under 512 tokens. Skipped
+    # for smoke runs (their max_steps cap makes the speedup irrelevant
+    # and packing+masking edge cases are easier to debug without it).
+    if (
+        getattr(cfg, "enable_packing", False)
+        and not smoke
+        and _sft_config_supports("packing")
+    ):
+        sft_kwargs["packing"] = True
+        print("[train] Sequence packing enabled (packing=True).")
 
     # In-loop overfit detector + best-checkpoint policy:
     # When we have a held-out `test` split, evaluate every `eval_steps`,

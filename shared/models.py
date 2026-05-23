@@ -2,12 +2,37 @@
 
 from __future__ import annotations
 
+import os
+
 from transformers import AutoTokenizer
 
 MODEL_IDS = {
     "qwen": "Qwen/Qwen2.5-7B-Instruct",
     "llama": "meta-llama/Llama-3.1-8B-Instruct",
 }
+
+
+def attn_implementation() -> str:
+    """Pick the best available attention backend.
+
+    Order: FlashAttention 2 (if installed) > SDPA (when CUDA is
+    available) > eager. Set ``UYGHURGPT_ATTN`` to force a backend.
+    """
+    override = os.environ.get("UYGHURGPT_ATTN")
+    if override:
+        return override
+    try:
+        import flash_attn  # noqa: F401
+        return "flash_attention_2"
+    except ImportError:
+        pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "sdpa"
+    except Exception:
+        pass
+    return "eager"
 
 
 def model_id(choice: str) -> str:
