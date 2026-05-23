@@ -126,7 +126,13 @@ def main():
             f"{py} -m pip install -q -r requirements.txt jinja2 huggingface_hub && "
             f"{py} -m pip install -q --index-url https://download.pytorch.org/whl/cu121 torch && "
             # torch pulls fsspec>2026.2; datasets 4.x requires fsspec[http]<=2026.2.0
-            f"{py} -m pip install -q 'fsspec[http]>=2023.1.0,<=2026.2.0'"
+            f"{py} -m pip install -q 'fsspec[http]>=2023.1.0,<=2026.2.0' && "
+            # FlashAttention 2 needs --no-build-isolation so it picks up the
+            # already-installed torch/cuda. Failure is non-fatal: the training
+            # code falls back to SDPA / eager attention. The "|| true" keeps
+            # the install step green so the actual training job still launches.
+            f"({py} -m pip install -q --no-build-isolation flash-attn || "
+            f"echo '[install] flash-attn build failed; will fall back to SDPA')"
         )
     install_cmd = " && ".join(install_parts)
     if install_cmd:
