@@ -7,5 +7,7 @@ datasets>=2.20
 sentencepiece
 sacrebleu
 scikit-learn
+tensorboard
 numpy>=1.23.5,<2.0
 matplotlib>=3.7,<4.0
+pytest>=8.0
