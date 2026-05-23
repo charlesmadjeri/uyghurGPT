@@ -13,6 +13,20 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_hf_cache(tmp_path, monkeypatch):
+    """Keep `Dataset.from_generator` from writing to the shared HF cache.
+
+    The generator builder writes a fingerprinted arrow file + a filelock
+    under ``HF_DATASETS_CACHE``; in CI sandboxes (or shared user caches)
+    that directory can be read-only. Per-test tmp dirs side-step both.
+    """
+    cache = tmp_path / "hf_datasets_cache"
+    cache.mkdir()
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(cache))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf_home"))
+
+
 def test_flan_count_for_mix_basic():
     from shared.data import _flan_count_for_mix
 
@@ -104,6 +118,55 @@ def test_no_pair_leakage_after_bidirectional_expansion(monkeypatch):
         f"pair leakage: {len(train_ids & test_ids)} pair(s) in both splits"
     )
     assert train_ids | test_ids == set(range(n))
+
+
+def test_streaming_path_no_pair_leakage(tmp_path, monkeypatch):
+    """Streaming-from-disk preprocess path also enforces pair-level split.
+
+    Production runs hit ``_stream_cute_rows`` (not the in-memory
+    generator). This locks in the same no-leakage invariant on that
+    path so a future refactor cannot regress it silently.
+    """
+    from shared import data
+
+    n = 200
+    en_path = tmp_path / "en.txt"
+    ug_path = tmp_path / "uy.txt"
+    en_path.write_text("\n".join(f"en-{i}" for i in range(n)) + "\n")
+    ug_path.write_text("\n".join(f"ug-{i}" for i in range(n)) + "\n")
+
+    monkeypatch.setattr(
+        data, "_local_cute_paths", lambda: (en_path, ug_path)
+    )
+    monkeypatch.setattr(data, "load_flan_en_only", lambda *a, **k: [])
+
+    class Cfg:
+        model = "qwen"
+        mix = 0
+        sample_count = None
+        flan_seed = 42
+        flan_subset_size = 0
+        test_split_pct = 0.1
+
+    ds_dict = data.build_training_dataset(Cfg())
+
+    def pair_ids(split):
+        ids = set()
+        for row in split:
+            for msg in row["messages"]:
+                content = msg["content"]
+                if content.startswith("en-"):
+                    ids.add(int(content.split("-")[1]))
+                    break
+        return ids
+
+    train_ids = pair_ids(ds_dict["train"])
+    test_ids = pair_ids(ds_dict["test"])
+    assert train_ids.isdisjoint(test_ids)
+    assert train_ids | test_ids == set(range(n))
+    # Bidirectional expansion preserved through streaming.
+    assert len(ds_dict["train"]) == 2 * len(train_ids)
+    assert len(ds_dict["test"]) == 2 * len(test_ids)
 
 
 def test_each_pair_appears_in_both_directions(monkeypatch):
