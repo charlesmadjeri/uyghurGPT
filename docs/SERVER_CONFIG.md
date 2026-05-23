@@ -230,7 +230,8 @@ python3 scripts/check.py --server ju-compute-server --pull   # fetch artifacts
 
 `--pull` includes TensorBoard event files (both `logs/` and the
 `checkpoints/<label>/runs/` paths) and eval JSON by default. It skips
-`preprocessed_dataset/` (reproducible on the server, often 250 MB+),
+`preprocessed_dataset/` (reproducible on the server; **~25–30 GB**
+for a full Mix-20 run with ~1.8M train + ~96k test rows),
 `hf_cache/`, and the adapter weight directories
 (`checkpoints/<label>/checkpoint-*/`, `checkpoints/<label>/final/`).
 Use `--pull-checkpoints` to also fetch the adapter weights, or `--logs`
@@ -286,10 +287,10 @@ still need `tensorboard` installed for TensorBoard logging:
 
 | Symptom | Fix |
 |---------|-----|
-| `cannot import name 'DataCollatorForCompletionOnlyLM' from 'trl'` | Upgrade `shared/training.py` (uses `assistant_only_loss` or full-sequence fallback). |
-| `SFTConfig.__init__() got an unexpected keyword argument 'max_seq_length'` | Same — code maps to `max_length` on modern TRL. |
-| `PeftModel` instance together with a `peft_config` | Same — do not pass `peft_config` when model is already wrapped. |
-| `assistant_only_loss=True` but dataset is not conversational | Same — our data uses pre-templated `text` strings, not `messages` lists. |
+| `cannot import name 'DataCollatorForCompletionOnlyLM' from 'trl'` | Install a TRL build that exports the collator, or let code fall back to `assistant_only_loss` / full-sequence training. |
+| `SFTConfig: ignoring unsupported keys ['max_seq_length']` | Harmless on TRL 1.4 — code maps `max_seq_length` → `max_length=512`. |
+| `PeftModel` instance together with a `peft_config` | Do not pass `peft_config` when model is already wrapped (`shared/training.py` handles this). |
+| `Token indices sequence length is longer than ...` during tokenize | One outlier CUTE-P line; training still truncates to `max_length=512`. Safe to ignore unless training crashes on position indices. |
 | `TensorBoardCallback requires tensorboard to be installed` | `pip install tensorboard` in `uyghur_env`, or rely on code fallback to `report_to="none"`. Listed in `requirements.txt`. |
 | Train job uses a **new** run dir; `FileNotFoundError: preprocessed_dataset` | **Must pass `--run-id`** (see §4). Omitting `--new-run` does **not** auto-resume. |
 
@@ -298,6 +299,74 @@ still need `tensorboard` installed for TensorBoard logging:
 ## 4. After preflight passes
 
 You're cleared to run experiment 1.
+
+### 4.0 CUTE-P corpus on the cluster
+
+Preprocess loads aligned `en.txt` / `uy.txt` from
+**`~/uyghurGPT/dataset/`**. If either file is missing, `shared/data.py`
+calls `huggingface_hub.hf_hub_download` to fetch **only** the two CUTE-P
+parallel files from `CMLI-NLP/CUTE-Datasets` (~10.9 GB total, one-time)
+and persists them locally — subsequent runs hit disk directly.
+
+The download uses `HF_TOKEN` from `.env`, resumes through the standard
+HF cache (`HF_HOME=~/uyghurGPT/hf_cache`) on retry, and writes the
+target files atomically (via a `.part` suffix + rename) so a crashed
+job never leaves a half-written file that would silently truncate the
+corpus.
+
+You should see roughly **~934k** CUTE-P pairs in the Slurm log
+(`[data] CUTE-P pairs=... source=local-stream path=...`). The line
+`[data] Downloading CMLI-NLP/CUTE-Datasets:parallel-corpus/en.txt -> ...`
+only appears on the very first run (or after `rm
+~/uyghurGPT/dataset/*.txt`). Line counts are cached in
+`<file>.lines` sidecar files so the full 12 GB sweep happens **once
+per machine**.
+
+`--sample-count N` still caps the read for smoke tests.
+
+### 4.0.1 Memory budget (24 GB VRAM = 24 GB host RAM)
+
+The cluster's MIG slice is **24 GB VRAM** — that is the hard ceiling
+that drives all GPU-side hyperparameters. We deliberately self-cap
+host RAM at the same number (`scripts/push.py --mem` defaults to
+**24G**) so any host-side regression surfaces during the run instead
+of hiding behind a 128 GB headroom. Earlier runs requested 128 GB
+(the full node) and *still* OOM-killed because the old preprocess
+materialised the full expanded `list[dict]` corpus in Python
+(~60–100 GB peak).
+
+| Stage      | Where it lives | Peak with current code   | Notes                                       |
+|------------|----------------|--------------------------|---------------------------------------------|
+| Preprocess | CPU RAM        | **< 1 GB**               | Streams CUTE-P from disk; Arrow writer flushes 1k rows at a time |
+| Train load | GPU VRAM       | ~12–14 GB                | Qwen2.5-7B in 4-bit NF4 (`load_in_4bit=True`) + LoRA adapters    |
+| Train step | GPU VRAM       | ~18–22 GB (bsz=4, seq=512) | Activations + grads + Adam(8-bit) state; tune via `bs` and `seq` |
+| Train load | CPU RAM        | ~2–4 GB                  | `low_cpu_mem_usage=True` streams weights direct to GPU            |
+| Train step | CPU RAM        | ~6–10 GB                 | Tokenizer + DataLoader workers + Arrow mmap (mostly page cache)   |
+| Eval       | GPU VRAM       | similar to train load    | No optimizer state; smaller batches via `per_device_eval_batch_size` |
+
+Total host RAM at every stage stays well under 24 GB. The 24 GB cap
+is enforced at job submission via `sbatch --mem=24G`; the cgroup will
+SIGKILL the job if anything climbs past it — exactly what we want for
+catching regressions early. Override with `--mem 32G` (or higher)
+only after a Slurm log clearly shows a real OOM that isn't a code
+bug.
+
+VRAM levers (in `experiments/experiment_1/config.py`) if a step still
+OOMs the GPU:
+
+- `per_device_train_batch_size` 4 → 2 (halves activations, doubles
+  steps). Compensate with `gradient_accumulation_steps` 4 → 8 to keep
+  effective batch size.
+- `max_seq_length` 512 → 384 (~150 MB; truncates <5% of CUTE-P) → 256
+  (truncates ~30%, real quality cost; last resort).
+- `lora_rank` 16 → 8 (saves ~50 MB; small accuracy cost).
+
+Host-RAM levers if you ever need to push `--mem` even lower:
+
+- `--cpus 8 → 4` — each DataLoader worker is a forked Python; halving
+  CPUs halves the worker footprint.
+- `flan_subset_size` 50_000 → 10_000 — caps the FLAN reservoir.
+- `--sample-count N` — caps CUTE-P upstream of everything.
 
 ### 4.1 Fresh run (preprocess + train + eval)
 

@@ -89,19 +89,24 @@ python3 -m pip install -r requirements.txt
 
 Stage semantics for an experiment:
 
-- **`preprocess`** — load CUTE-P (local files or HF Hub fallback), build
-  bidirectional EN↔UG instructions in conversational form
-  (`{"messages": [...]}`), blend Mix-{0/10/20/50} FLAN EN-only examples,
-  apply a **pair-level train/test split** (`test_split_pct=0.05` by
-  default — splits at parallel-pair level *before* bidirectional
-  expansion, so the EN→UG and UG→EN halves of a pair always land in
-  the same split), and save the resulting `DatasetDict` to
-  `artifacts/preprocessed_dataset/`. The split is locked in by
+- **`preprocess`** — load CUTE-P from `~/uyghurGPT/dataset/{en,uy}.txt`
+  (auto-downloaded once from `CMLI-NLP/CUTE-Datasets` if missing),
+  **stream** rows into Arrow via `Dataset.from_generator` (preprocess
+  peak RAM under 1 GB on the full ~934k-pair corpus), build bidirectional
+  EN↔UG instructions in conversational form (`{"messages": [...]}`),
+  blend Mix-{0/10/20/50} FLAN EN-only examples, apply a **pair-level
+  train/test split** (`test_split_pct=0.05` by default — splits at
+  parallel-pair level *before* bidirectional expansion, so the EN→UG
+  and UG→EN halves of a pair always land in the same split), and save
+  the resulting `DatasetDict` to `artifacts/preprocessed_dataset/`
+  (~25–30 GB on disk for Mix-20 at full scale). Locked in by
   `tests/test_data_split.py`.
 - **`train`** — QLoRA fine-tune Qwen using the preprocessed dataset; cosine LR,
-  3% warmup, paged AdamW 8-bit, gradient checkpointing, native
-  assistant-only loss masking (`SFTConfig(assistant_only_loss=True)`).
-  Evaluates on the held-out `test` split every `eval_steps`
+  3% warmup, paged AdamW 8-bit, gradient checkpointing, **assistant-only
+  loss** via `DataCollatorForCompletionOnlyLM` (messages templated to
+  `text` at train time; `assistant_only_loss` is a fallback on older TRL).
+  Sequences capped at `max_length=512` in `SFTConfig` (TRL 1.4 maps from
+  `max_seq_length` in config). Evaluates on the held-out `test` split every `eval_steps`
   (TensorBoard `eval/loss`), with `EarlyStoppingCallback(patience=3)`
   and `load_best_model_at_end=True`. The saved `final/` adapter is the
   lowest-`eval_loss` checkpoint, not the last.
@@ -174,7 +179,9 @@ python3 scripts/push.py --server ju-compute-server --new-run --install-deps
 ```
 
 Useful flags (defaults shown): `--mode all`, `--experiment 1`, `--time
-5-00:00:00`, `--cpus 8`, `--gpus 1`, `--partition priority`.
+5-00:00:00`, `--cpus 8`, `--gpus 1`, `--mem 24G`, `--partition priority`.
+See [`docs/SERVER_CONFIG.md`](docs/SERVER_CONFIG.md) §4.0.1 for the 24 GB
+VRAM/RAM budget and tuning levers.
 
 ## Monitor and pull results
 

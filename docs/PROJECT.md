@@ -144,7 +144,7 @@ Neither Qwen2.5 nor LLaMA-3.1 undergoes vocabulary expansion or tokenizer modifi
 | Max sequence length | 512 tokens | Covers >95% of CUTE-P document lengths |
 | Optimizer | paged AdamW 8-bit | Recommended for QLoRA; bf16 LoRA can use `adamw_torch` |
 | LR | 2e-4 | Cosine decay, warmup 3% |
-| Loss masking | assistant-only | Conversational `messages` dataset + `SFTConfig(assistant_only_loss=True)` (native modern TRL); legacy completion-only collator as fallback. See `PROJECT_REFINEMENT.md` §10 |
+| Loss masking | assistant-only | Conversational `messages` on disk; at train time templated to `text` + `DataCollatorForCompletionOnlyLM` (TRL ≥0.10 on cluster). `assistant_only_loss=True` is fallback when the collator is unavailable. See `PROJECT_REFINEMENT.md` §10 |
 | Seeding | `transformers.set_seed(42)` + `SFTConfig(seed=42, data_seed=42)` | Reproducible shuffles / init / dropout / DataLoader order |
 | Train/test split | pair-level, `test_split_pct=0.05` of CUTE-P pairs (`shared/data._split_pair_indices`) | Locked in by `tests/test_data_split.py`. See `PROJECT_REFINEMENT.md` §9 |
 | In-loop eval | `eval_strategy="steps"`, `eval_steps=50` on the held-out `test` split | Produces `eval/loss` in TensorBoard alongside `train/loss` — overfit detector |
@@ -257,7 +257,7 @@ Cluster: **`slurm.hj.se`** (Jönköping University), accessed via SSH alias `ju-
 **MIG implications (24 GB slice):**
 - **QLoRA stays the default** (4-bit NF4 base + bf16 adapters + gradient checkpointing) — peak VRAM ~8–12 GB, leaves comfortable headroom.
 - **bf16 LoRA on a 7–8B model now fits** (bf16 7B ≈ 14 GB + bf16 adapters + activations ≈ 18–22 GB). Enable via `--bf16-lora` for ~2× faster training; same code path.
-- A single `--partition priority` job at the push.py default (5 days, the partition cap) comfortably covers `preprocess + train + eval` for one Qwen QLoRA Mix-20 fine-tune (~6–10 h for 3 epochs on full CUTE-P + ~1 h evaluation). The headroom absorbs requeues, longer eval, or running multiple Mix variants in one job.
+- A single `--partition priority` job at the push.py default (5 days, the partition cap) should cover `preprocess + train + eval` for one Qwen QLoRA Mix-20 fine-tune on full CUTE-P. **Wall-clock is dominated by training**, not preprocess: streaming preprocess is tens of minutes; **tokenizing ~1.8M train rows** can take several hours; **3 epochs over ~1.8M examples** is typically **1–3+ days** on a 24 GB MIG slice (not the old 6–10 h smoke estimate). Budget ~1 h for external `--mode eval`. The 5-day cap absorbs tokenization + multi-day training + eval.
 - Full ablation (Mix-{0,10,20,50} × {Qwen, LLaMA} = 8 jobs) can run in parallel across 7 workers (one queued) if stretch goals are reached.
 - **For each new job:** read `nvidia-smi -L` at startup. Expected: ~24 GB visible. If the slice profile changes, update batch size / sequence length before proceeding.
 
