@@ -83,7 +83,7 @@ All datasets and models used in this project are publicly accessible. Access not
 | Resource | Role | Source | License | Notes |
 |----------|------|---------|---------|-------|
 | **CUTE-P** (EN + UG subset) | Fine-tuning corpus | [`CMLI-NLP/CUTE`](https://github.com/CMLI-NLP/CUTE) | Open | ~10.9 GB on disk; ~934K EN↔UG pairs |
-| **FLORES-200** | Translation evaluation | HuggingFace `facebook/flores` | Open | 1012 sentences per language; use `eng_Latn` + `uig_Arab` |
+| **FLORES-200** (FLORES+) | Translation evaluation | HuggingFace [`openlanguagedata/flores_plus`](https://huggingface.co/datasets/openlanguagedata/flores_plus) (gated, instant) | Open | Successor to `facebook/flores` (whose dataset script was removed by `datasets>=2.20`); per-language configs `eng_Latn` + `uig_Arab` joined by `id`. ~1012 sentences/lang in `devtest`. |
 | **WCM-v2** | Uyghur classification eval | HuggingFace (gated) | Gated (instant) | Agree to share contact info — no approval wait |
 | **MiLiC-Eval** | Multi-task bilingual eval *(stretch)* | HuggingFace (gated) | Gated (instant) | Same gating as WCM-v2; defer to final report |
 | **Qwen2.5-7B-Instruct** | Primary model | [`Qwen/Qwen2.5-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) | Apache 2.0 | ~15 GB (bf16); ~8 GB (4-bit NF4) |
@@ -139,11 +139,16 @@ Neither Qwen2.5 nor LLaMA-3.1 undergoes vocabulary expansion or tokenizer modifi
 | LoRA rank | 16 | Can be raised to 32 on the 24 GB slice if headroom allows |
 | LoRA alpha | 32 | |
 | LoRA target modules | `q_proj, v_proj` | Expand to `k_proj, o_proj` on 24 GB for better adaptation |
-| Epochs | 3 | |
+| Epochs | 3 (early-stoppable) | Hard cap; the run stops earlier if `eval_loss` plateaus |
 | Batch size | 4 (effective 16 with grad accum ×4) | 24 GB allows raising to 8 (effective 32) for faster epochs |
 | Max sequence length | 512 tokens | Covers >95% of CUTE-P document lengths |
 | Optimizer | paged AdamW 8-bit | Recommended for QLoRA; bf16 LoRA can use `adamw_torch` |
 | LR | 2e-4 | Cosine decay, warmup 3% |
+| Loss masking | assistant-only | Conversational `messages` dataset + `SFTConfig(assistant_only_loss=True)` (native modern TRL); legacy completion-only collator as fallback. See `PROJECT_REFINEMENT.md` §10 |
+| Seeding | `transformers.set_seed(42)` + `SFTConfig(seed=42, data_seed=42)` | Reproducible shuffles / init / dropout / DataLoader order |
+| Train/test split | pair-level, `test_split_pct=0.05` of CUTE-P pairs (`shared/data._split_pair_indices`) | Locked in by `tests/test_data_split.py`. See `PROJECT_REFINEMENT.md` §9 |
+| In-loop eval | `eval_strategy="steps"`, `eval_steps=50` on the held-out `test` split | Produces `eval/loss` in TensorBoard alongside `train/loss` — overfit detector |
+| Best checkpoint | `load_best_model_at_end=True, metric_for_best_model="eval_loss"` + `EarlyStoppingCallback(patience=3)` | Final adapter = lowest-`eval_loss` checkpoint, not the last |
 | bf16 LoRA flag | `--bf16-lora` | Now fits on 24 GB slice; ~2× faster than QLoRA |
 
 ---
@@ -163,11 +168,23 @@ Mix-20 is the core experiment. Ablation (Mix-0, Mix-10, Mix-50) runs only after 
 
 ## Evaluation Plan
 
-### Core evaluation
+Evaluation happens at **two levels**:
+
+1. **In-loop validation** — `eval_loss` on a 5 % pair-level holdout of
+   the CUTE-P + FLAN mix, computed every `eval_steps` during training
+   (`shared/training.py`). This is the **overfit detector**: compare
+   `train/loss` vs `eval/loss` in TensorBoard, and the
+   `EarlyStoppingCallback` reads from it. **Not** a reported number —
+   it is in-distribution validation, by construction.
+2. **External, never-seen evaluation** — the benchmarks below, run by
+   `--mode eval` (`shared/evaluation.py`). These are the numbers that
+   go in the final report.
+
+### Core evaluation (reported)
 | Benchmark | Task | Metric | Models evaluated |
 |-----------|------|--------|-----------------|
-| FLORES-200 | EN→UG translation | chrF, BLEU | Qwen fine-tune, Qwen zero-shot, LLaMA zero-shot, CUTE-Llama-P (if available) |
-| FLORES-200 | UG→EN translation | chrF, BLEU | Same |
+| FLORES+ (devtest) | EN→UG translation | chrF, BLEU | Qwen fine-tune, Qwen zero-shot, LLaMA zero-shot, CUTE-Llama-P (if available) |
+| FLORES+ (devtest) | UG→EN translation | chrF, BLEU | Same |
 | WCM-v2 | Uyghur text classification | Accuracy | Same |
 | Held-out English split (C4, 1K samples) | Perplexity | PPL | Qwen fine-tune vs Qwen zero-shot (catastrophic forgetting check) |
 
@@ -249,12 +266,12 @@ Cluster: **`slurm.hj.se`** (Jönköping University), accessed via SSH alias `ju-
 ## Per-run Artifacts
 
 Each run writes to `results/run_<run_id>/experiment_<N>/`:
-- `artifacts/run_config.json`, `run_status.json`
-- `artifacts/eval_<benchmark>.json` per evaluation benchmark
-- `artifacts/training_history.csv`
-- `artifacts/preprocessed_dataset/` — HF-saved preprocess output
-- `checkpoints/<model_label>/` — LoRA adapters per epoch
-- `logs/<model_label>/` — TensorBoard / TRL training logs
+- `artifacts/run_config.json` — frozen hyperparameters (includes `flan_seed`, `test_split_pct`, `eval_steps`, `early_stopping_patience`, …); split is a deterministic function of these
+- `artifacts/run_status.json` — current pipeline stage and timestamp
+- `artifacts/eval_<benchmark>.json` — one file per evaluation benchmark + variant (FLORES+ EN↔UG, WCM-v2, C4 PPL)
+- `artifacts/preprocessed_dataset/` — HF `DatasetDict` with `train` + `test` splits (see `shared/data.build_training_dataset`)
+- `checkpoints/<model_label>/` — LoRA adapters, saved every `eval_steps`; `final/` is the best-`eval_loss` adapter (`load_best_model_at_end=True`)
+- `logs/<model_label>/` and `checkpoints/<model_label>/runs/*` — TensorBoard event files (`train/loss`, `eval/loss`, `learning_rate`, `grad_norm`)
 
 Preflight artifacts (run once per cluster, not per experiment) live under
 `results/preflight/`: `checkN.json`, `preflight_report.md`,

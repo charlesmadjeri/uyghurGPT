@@ -175,6 +175,147 @@ all optimistic assumptions for a first-time Slurm user on a shared cluster.
 
 ---
 
+## 9. Train / Test / Eval Split Formalised (Pair-Level, In-Pipeline)
+
+### What changed
+
+- **Original plan** (`03_planned_approach.md` v1 §1): write a separate
+  `dataset/cute_p_valdev.jsonl` of 1 000 held-out CUTE-P pairs as the
+  in-domain validation set, fed to a periodic "loss check" outside the
+  training loop. No formal three-way split was specified.
+- **Revised plan (implemented):** the split happens inside
+  `--mode preprocess`, at **parallel-pair level**, *before* bidirectional
+  expansion. The result is saved as a single HF `DatasetDict`:
+
+  | Split   | Role                                                                                       |
+  |---------|--------------------------------------------------------------------------------------------|
+  | `train` | gradient updates                                                                           |
+  | `test`  | in-loop `eval_loss` curve in TensorBoard (overfit detector) + early stopping / best-checkpoint signal |
+  | `eval`  | external FLORES-200 devtest + WCM-v2 + C4 PPL (never seen during training, different domain) |
+
+  The default `test_split_pct` is 5 %, controlled by
+  `experiments/experiment_1/config.Experiment1Config`. FLAN rows get an
+  independent row-level split at the same percentage, and the Mix-{N}
+  ratio is computed against the **training pair count** so the effective
+  ratio is preserved after holdout.
+
+### Why
+
+Three reasons:
+
+1. **No leakage across translation directions.** A naive row-level
+   shuffle puts one CUTE-P pair's `en2ug` row in `train` and its
+   `ug2en` row in `test`. The model has then already seen the source
+   and target tokens (in opposite roles) during training, so `eval_loss`
+   becomes an optimistic in-distribution memorisation signal rather
+   than a real overfit detector. Splitting at pair level removes this
+   structurally; the invariant is enforced by
+   `tests/test_data_split.py::test_no_pair_leakage_after_bidirectional_expansion`.
+2. **No separate file to keep in sync.** The original plan implied
+   maintaining `dataset/cute_p_clean.jsonl` and `dataset/cute_p_valdev.jsonl`
+   side-by-side. Storing the split *inside* the preprocessed dataset
+   removes a class of "which `valdev` matches which `clean`?" bugs and
+   keeps the entire preprocess output under `artifacts/preprocessed_dataset/`,
+   which is what every other stage already reads from.
+3. **Reproducible from the run config.** The split is a deterministic
+   function of `(test_split_pct, flan_seed)`, both captured in
+   `artifacts/run_config.json`. Re-running `--mode preprocess` for the
+   same run id reproduces the split bit-for-bit, which is required
+   for `--run-id` resume semantics to be honest.
+
+### What we explicitly did not do
+
+- **No length-stratified split.** CUTE-P pairs are not balanced by token
+  length across train/test; random pair-level shuffle is sufficient at
+  the 5 % holdout scale (variance is dominated by content, not length).
+- **No language-direction stratification.** Each kept pair contributes
+  one `en2ug` and one `ug2en` row, so train and test are direction-
+  balanced by construction.
+
+---
+
+## 10. Reproducibility & Best-Checkpoint Policy
+
+### What changed
+
+The original plan trained for a fixed `epochs=3` and saved the
+checkpoint from the last epoch. The revised plan adds three coupled
+training-hygiene controls:
+
+| Control                | Where                                         | Effect                                                                                      |
+|------------------------|-----------------------------------------------|---------------------------------------------------------------------------------------------|
+| **Seeded RNGs**        | `transformers.set_seed(cfg.flan_seed)` + `SFTConfig(seed=…, data_seed=…)` | Python `random`, NumPy, Torch (CPU+CUDA), DataLoader order and dropout masks are reproducible from the run config. |
+| **In-loop eval**       | `SFTConfig(eval_strategy="steps", eval_steps=50)` on the `test` split    | Produces `eval/loss` in TensorBoard alongside `train/loss`.                                 |
+| **Best-checkpoint + early stopping** | `load_best_model_at_end=True, metric_for_best_model="eval_loss"` + `EarlyStoppingCallback(patience=3)` | Final adapter is the lowest-`eval_loss` checkpoint, not the last; training stops if eval_loss plateaus for 3 evaluations. |
+
+Assistant-only loss masking moved from a best-effort path (legacy
+`DataCollatorForCompletionOnlyLM`, which was removed in newer TRL
+versions) to a first-class path: the dataset is stored in
+**conversational form** (`{"messages": [...]}`) and TRL applies the
+chat template plus assistant-token masking natively via
+`SFTConfig(assistant_only_loss=True)`. The text+collator path remains
+as an automatic fallback for older TRL.
+
+### Why
+
+- **Seeding** is the cheapest reproducibility win available; without it,
+  two runs of the same config produce different LoRA adapters and
+  different `eval_loss` curves, which makes ablation comparisons
+  ambiguous. Full GPU determinism is intentionally out of scope (cuDNN
+  + paged optimizer + bf16 ≠ bitwise reproducible without large speed
+  loss).
+- **Early stopping + best-checkpoint** turn the in-loop `eval_loss`
+  signal from passive ("look at the curve") into actionable ("stop
+  when it stops helping, keep what worked"). For a course project this
+  prevents wasted GPU hours past the overfit point and ensures the
+  reported FLORES/WCM numbers come from the genuinely best fine-tune,
+  not the most-trained one.
+- **Native assistant-only loss** is the documented modern path in TRL
+  and removes our dependency on a deprecated collator API. The
+  fallback path is preserved so older TRL builds (and the smoke
+  laptop env) still work.
+
+---
+
+## 11. Unit-Test Contract for the Data Split
+
+### What changed
+
+Introduced a `tests/` directory with `pytest` contract tests
+(`pytest >= 8`, listed in `requirements.txt`). The initial suite covers:
+
+| Test                                                                | Invariant locked in                                                                                  |
+|---------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| `test_pair_split_disjoint_and_sized`                                | The pair-level splitter returns disjoint train/test sets of the requested size.                       |
+| `test_pair_split_reproducible_from_seed`                            | Same `(n_pairs, test_pct, seed)` → bit-identical split; different seed → different split.            |
+| `test_pair_split_zero_pct`, `test_pair_split_too_few_pairs`         | Edge cases collapse to "all train, no test" without raising.                                          |
+| `test_no_pair_leakage_after_bidirectional_expansion`                | **The deep-learning hygiene invariant**: a CUTE-P pair is never simultaneously in train and test after the `en2ug` / `ug2en` expansion. |
+| `test_each_pair_appears_in_both_directions`                         | Bidirectional expansion is symmetric: every kept pair contributes one `en2ug` and one `ug2en` row.    |
+| `test_flan_count_for_mix_*`                                         | Mix ratio math is correct (and the Mix-100 degenerate case is rejected).                              |
+| `test_experiment1_defaults_are_production`                          | The committed defaults are not a "smoke" config (no `sample_count`, sane LoRA rank, `test_split_pct ∈ (0, 0.5)`, etc.). |
+
+All tests run **without HuggingFace downloads or GPU** — `shared/data`
+lazy-imports `datasets` and the leakage test stubs `load_cute_parallel_lines`
+to feed a synthetic 200-pair corpus.
+
+### Why
+
+The two failure modes these tests catch are silent and expensive:
+
+- **Pair leakage** is invisible from the training curves — `eval_loss`
+  just looks suspiciously good. Without the test, a refactor that
+  reverts to a row-level `train_test_split` would not be detected
+  until somebody noticed unrealistically low `eval_loss` weeks later.
+- **Accidentally shipped smoke defaults** (e.g., a forgotten
+  `sample_count=100`) waste a 5-day Slurm reservation on a useless
+  fine-tune. A one-line config test makes this a CI-catchable mistake.
+
+The suite is intentionally **small and fast** (≈ 2 s on CPU). It is a
+contract suite, not a coverage exercise; expanding it is welcome where
+similar silent failure modes are identified.
+
+---
+
 ## Summary Table
 
 | # | Change | Direction | Primary Reason |
@@ -187,6 +328,9 @@ all optimistic assumptions for a first-time Slurm user on a shared cluster.
 | 6 | Pre-registered success criteria added | Scientific rigour | Standard practice + course grading criteria |
 | 7 | "No vocab surgery" made conditional | Honesty | Unverified claim removed |
 | 8 | Ablation scope reduced | Scope reduction | Compute constraints + experimental clarity |
+| 9 | Three-way pair-level split formalised in-pipeline | Methodological rigour | Removes leakage across `en2ug` / `ug2en`; replaces external `valdev.jsonl` file |
+| 10 | Seeded RNGs + early stopping + best-checkpoint + native assistant-only loss | Reproducibility + waste reduction | Final adapter = lowest `eval_loss` checkpoint, not the last; runs are deterministic from `run_config.json` |
+| 11 | Pytest contract suite for the data split | Regression prevention | Locks in the no-leakage invariant + guards against shipped smoke defaults |
 
 ---
 
