@@ -122,18 +122,15 @@ def main():
     install_parts = []
     py = REMOTE_PYTHON
     if args.install_deps:
-        install_parts.append(
-            f"{py} -m pip install -q -r requirements.txt jinja2 huggingface_hub && "
-            f"{py} -m pip install -q --index-url https://download.pytorch.org/whl/cu121 torch && "
+        install_parts.extend([
+            f"{py} -m pip install -q -r requirements.txt jinja2 huggingface_hub",
+            f"{py} -m pip install -q --index-url https://download.pytorch.org/whl/cu121 torch",
             # torch pulls fsspec>2026.2; datasets 4.x requires fsspec[http]<=2026.2.0
-            f"{py} -m pip install -q 'fsspec[http]>=2023.1.0,<=2026.2.0' && "
-            # FlashAttention 2 needs --no-build-isolation so it picks up the
-            # already-installed torch/cuda. Failure is non-fatal: the training
-            # code falls back to SDPA / eager attention. The "|| true" keeps
-            # the install step green so the actual training job still launches.
-            f"({py} -m pip install -q --no-build-isolation flash-attn || "
-            f"echo '[install] flash-attn build failed; will fall back to SDPA')"
-        )
+            f"{py} -m pip install -q 'fsspec[http]>=2023.1.0,<=2026.2.0'",
+            # flash-attn must compile against the torch wheel above; failures
+            # are logged but do not abort the job (training falls back to SDPA).
+            f"{py} -u scripts/ensure_flash_attn.py",
+        ])
     install_cmd = " && ".join(install_parts)
     if install_cmd:
         install_cmd += " && "

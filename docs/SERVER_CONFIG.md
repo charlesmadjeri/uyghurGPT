@@ -181,7 +181,64 @@ If `torch.cuda.is_available()` is `False`, reinstall torch from the
 cu121 index. If you see an `fsspec` `ImportError` from `datasets`,
 re-run step 1.3 line 3.
 
-### 1.5 (Done by push scripts) Per-job environment exports
+### 1.5 FlashAttention 2 (required for sequence packing)
+
+`--install-deps` runs `scripts/ensure_flash_attn.py` at the **start of each
+Slurm job**. That script compiles `flash-attn` from source; it needs
+**`nvcc` on PATH** (CUDA toolkit). On many clusters the toolkit is **not**
+loaded inside the job unless you `module load cuda/...`.
+
+If the build fails, training still runs but logs:
+
+```text
+[train] Sequence packing disabled: attn='sdpa' ...
+[train] flash_attn import failed (ImportError: ...)
+```
+
+and is ~3× slower than packing+FA2.
+
+**One-time install (recommended)** — inside a GPU allocation, with CUDA modules:
+
+```bash
+srun --gres=gpu:1 --time=01:00:00 --partition=priority --pty bash
+module avail cuda          # pick the version matching the driver (often 12.x)
+module load cuda/12.2      # example — use your site's module name
+which nvcc                 # must print a path, not empty
+cd ~/uyghurGPT
+# Do NOT use bare `python` here — srun shells often ignore `micromamba activate`.
+$HOME/micromamba/envs/uyghur_env/bin/python scripts/ensure_flash_attn.py
+# must end with: [flash-attn] OK — installed and importable
+```
+
+If you prefer `micromamba activate`, initialize the shell hook first:
+
+```bash
+eval "$(micromamba shell hook -s bash)"
+micromamba activate uyghur_env
+which python   # must be .../uyghur_env/bin/python, not /usr/bin/python
+```
+
+Verify:
+
+```bash
+$HOME/micromamba/envs/uyghur_env/bin/python -c "import flash_attn; print(flash_attn.__version__)"
+```
+
+Then submit **without** relying on a per-job compile (optional: omit
+`--install-deps` on later pushes once FA2 is installed).
+
+**Debug a failed `--install-deps` run:** open the Slurm `.out` file and search
+for `[flash-attn]`. Lines like `nvcc: NOT ON PATH` or `pip exited 1` mean the
+job never got a working FA2 build even though pip was invoked.
+
+| Symptom | Fix |
+|---------|-----|
+| `[flash-attn] nvcc: NOT ON PATH` | `module load cuda/...` in the GPU shell, re-run `ensure_flash_attn.py` |
+| `[flash-attn] FAILED — pip exited 1` | Read pip errors above that line; often torch/CUDA mismatch — reinstall torch from cu121 index (§1.3) first |
+| `[flash-attn] OK` in log but train still `attn=sdpa` | Different Python env in job vs install shell — always use `$HOME/micromamba/envs/uyghur_env/bin/python` |
+| Build takes >30 min | Normal on first compile; do the one-time install in an interactive `srun` instead of every job |
+
+### 1.6 (Done by push scripts) Per-job environment exports
 
 Both `scripts/push.py` and `scripts/run_preflight.py` set these inside
 the SLURM `--wrap`. You only need to know they exist if a future job
@@ -291,9 +348,10 @@ still need `tensorboard` installed for TensorBoard logging:
 | `eval_loss` is `NaN` during in-loop eval | Fixed — default path uses TRL `assistant_only_loss` with `eval_packing=False`; collator path when packing is off. |
 | `SFTConfig: ignoring unsupported keys ['max_seq_length']` | Harmless on TRL 1.4 — code maps `max_seq_length` → `max_length=512`. |
 | `PeftModel` instance together with a `peft_config` | Do not pass `peft_config` when model is already wrapped (`shared/training.py` handles this). |
-| `Token indices sequence length is longer than ...` during tokenize | One outlier CUTE-P line; training still truncates to `max_length=512`. Safe to ignore unless training crashes on position indices. |
+| `Token indices sequence length is longer than ...` during tokenize | Fixed — preprocess drops fields over `4 × max_seq_length` chars; tokenizer `model_max_length` is set to `max_seq_length`. Re-run `--mode preprocess` on old artifacts. |
 | `TensorBoardCallback requires tensorboard to be installed` | `pip install tensorboard` in `uyghur_env`, or rely on code fallback to `report_to="none"`. Listed in `requirements.txt`. |
 | Train job uses a **new** run dir; `FileNotFoundError: preprocessed_dataset` | **Must pass `--run-id`** (see §4). Omitting `--new-run` does **not** auto-resume. |
+| `Sequence packing disabled: attn='sdpa'` after `--install-deps` | FA2 build failed silently in older pushes; grep `[flash-attn]` in Slurm log. Fix with §1.5 (GPU shell + `module load cuda`). |
 
 ---
 
@@ -376,13 +434,14 @@ Two opt-in throughput features are **on by default** in
 
 | Knob | Where | Effect | Disable |
 |------|-------|--------|---------|
-| **Sequence packing** | `SFTConfig(packing=True)` when TRL supports it | ~2-3x speedup on CUTE-P (most pairs <512 tokens) | `enable_packing=False` in config |
-| **FlashAttention 2** | `AutoModelForCausalLM(..., attn_implementation="flash_attention_2")` when `flash_attn` is importable | ~1.5x attention speedup | `UYGHURGPT_ATTN=sdpa` env var |
+| **Sequence packing** | `SFTConfig(packing=True)` when TRL supports it **and** FA2/FA3 is active | ~2-3x speedup on CUTE-P (most pairs <512 tokens) | `enable_packing=False` in config |
+| **FlashAttention 2** | `AutoModelForCausalLM(..., attn_implementation="flash_attention_2")` when `flash_attn` is importable | ~1.5x attention speedup; **required** for packing | `UYGHURGPT_ATTN=sdpa` env var |
 
-Combined speedup is ~3-4x. `push.py --install-deps` attempts to
-`pip install --no-build-isolation flash-attn`; if the build fails on
-the cluster, the training code falls back to SDPA / eager and prints
-`[train] Loading ... attn=sdpa`.
+Combined speedup is ~3-4x when both are on. FA2 is **not** in
+`requirements.txt`; install once per env via §1.5 (`ensure_flash_attn.py`).
+`push.py --install-deps` re-runs that script each job (verbose log). If
+FA2 is missing, training uses SDPA, **auto-disables packing**, and falls
+back to the completion collator for assistant-only loss.
 
 `Experiment1Config.sample_count` defaults to **100,000** CUTE-P pairs
 (~237k bidirectional + FLAN rows). Override at the CLI with
