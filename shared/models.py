@@ -35,6 +35,27 @@ def attn_implementation() -> str:
     return "eager"
 
 
+def dtype_kwarg(value) -> dict:
+    """Return the ``{'dtype': value}`` kwarg using the current transformers name.
+
+    transformers >= 4.56 renamed ``torch_dtype`` to ``dtype`` and emits a
+    DeprecationWarning on the old name. Older builds still expect
+    ``torch_dtype``. We pick the right key at import time so every
+    ``AutoModelForCausalLM.from_pretrained(..., **dtype_kwarg(...))`` call
+    is silent on both APIs.
+    """
+    import inspect
+
+    from transformers import AutoModelForCausalLM
+
+    try:
+        params = inspect.signature(AutoModelForCausalLM.from_pretrained).parameters
+        key = "dtype" if "dtype" in params else "torch_dtype"
+    except (TypeError, ValueError):
+        key = "torch_dtype"
+    return {key: value}
+
+
 def model_id(choice: str) -> str:
     if choice not in MODEL_IDS:
         raise ValueError(f"Unknown model choice {choice!r}; expected one of {list(MODEL_IDS)}")

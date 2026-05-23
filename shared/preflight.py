@@ -230,6 +230,8 @@ def _qlora_memory_check(check_id, name, model_id, args):
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
+        from shared.models import dtype_kwarg
+
         device_props = torch.cuda.get_device_properties(0)
         print(f"[check{check_id}] Device: {device_props.name} ({device_props.total_memory / 1024**3:.2f} GB)")
         print(f"[check{check_id}] Loading {model_id} in 4-bit NF4 ...")
@@ -249,8 +251,8 @@ def _qlora_memory_check(check_id, name, model_id, args):
             quantization_config=bnb,
             device_map={"": 0},
             attn_implementation="eager",
-            torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
+            **dtype_kwarg(torch.bfloat16),
         )
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
         lora_cfg = LoraConfig(
@@ -524,6 +526,8 @@ def check5_cute_llama(args):
 
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        from shared.models import dtype_kwarg
+
         # Sentence-aligned FLORES-200 dev: first k as exemplars, next n_eval as test.
         # Paper protocol is k=3.  We evaluate on n_eval=5 FLORES sentences
         # (real references → can compute chrF).
@@ -554,8 +558,8 @@ def check5_cute_llama(args):
             subfolder=CUTE_LLAMA_SUBFOLDER,
             device_map={"": 0},
             trust_remote_code=True,
-            torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
+            **dtype_kwarg(torch.float16),
         )
         model.eval()
         peak_gb_load = torch.cuda.max_memory_allocated() / 1024**3

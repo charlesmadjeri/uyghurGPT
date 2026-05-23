@@ -16,6 +16,7 @@ from shared.data import load_preprocessed
 from shared.models import (
     attn_implementation,
     bnb_config,
+    dtype_kwarg,
     load_tokenizer,
     model_id,
     response_template,
@@ -244,8 +245,8 @@ def train(cfg, run_root: Path):
         quantization_config=quant,
         device_map={"": 0} if torch.cuda.is_available() else None,
         attn_implementation=attn,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         low_cpu_mem_usage=True,
+        **dtype_kwarg(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
     )
     if quant is not None:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)

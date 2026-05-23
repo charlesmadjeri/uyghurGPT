@@ -12,7 +12,7 @@ from datasets import load_dataset
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
 
-from shared.models import bnb_config, load_tokenizer, model_id
+from shared.models import bnb_config, dtype_kwarg, load_tokenizer, model_id
 from utils.io import checkpoint_dir, write_eval_artifact, write_run_status
 
 FLORES_REPO = "openlanguagedata/flores_plus"
@@ -50,8 +50,8 @@ def load_eval_model(model_choice: str, adapter_path: Path | None = None):
         quantization_config=quant,
         device_map={"": 0} if torch.cuda.is_available() else None,
         attn_implementation="eager",
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         low_cpu_mem_usage=True,
+        **dtype_kwarg(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
     )
     if adapter_path is not None:
         print(f"[eval] Loading adapter from {adapter_path}")
