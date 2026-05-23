@@ -69,7 +69,7 @@ def main():
     parser.add_argument("--partition", default="priority")
     parser.add_argument("--time", default="01:30:00",
                         help="Slurm walltime for the single job (default 1h30m)")
-    parser.add_argument("--mem", default="32G")
+    parser.add_argument("--mem", default="24G")
     parser.add_argument("--cpus", type=int, default=4)
     parser.add_argument("--no-sync", action="store_true",
                         help="Skip rsync (use if code is already in sync)")

@@ -39,6 +39,17 @@ def main():
     )
     parser.add_argument("--cpus", type=int, default=8)
     parser.add_argument("--gpus", type=int, default=1)
+    parser.add_argument(
+        "--mem",
+        default="24G",
+        help=(
+            "Slurm host RAM. Default 24G matches the 24 GB VRAM ceiling "
+            "(see docs/SERVER_CONFIG.md §4.0.1). Streaming preprocess "
+            "fits in <1 GB; train + eval fit in <16 GB with "
+            "low_cpu_mem_usage=True. Raise (e.g. --mem 32G) only if a "
+            "log clearly shows a real host-side OOM."
+        ),
+    )
     parser.add_argument("--partition", default="priority")
     parser.add_argument(
         "--install-deps",
@@ -130,6 +141,7 @@ def main():
         f"cd {remote_dir} && mkdir -p results && sbatch "
         f"--job-name=uyghur_{args.model}_{job_tag} "
         f"--time={args.time} --ntasks=1 --cpus-per-task={args.cpus} "
+        f"--mem={args.mem} "
         f"--gres=gpu:{args.gpus} --partition={args.partition} --requeue "
         f"--output=results/slurm_{slurm_run_label}_%j.out "
         f"--wrap=\"cd \\$HOME/uyghurGPT && set -a && source .env && set +a && "
@@ -137,7 +149,8 @@ def main():
         f"export HUGGING_FACE_HUB_TOKEN=\\$HF_TOKEN && "
         f"export CUDA_VISIBLE_DEVICES=0 && "
         f"export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && "
-        f"{install_cmd}{REMOTE_PYTHON} main.py --experiment {args.experiment} "
+        f"export PYTHONUNBUFFERED=1 && "
+        f"{install_cmd}{REMOTE_PYTHON} -u main.py --experiment {args.experiment} "
         f"--mode {args.mode} {run_arg}{sample_arg}"
         f"--model {args.model} --mix {args.mix} --epochs {args.epochs}\""
     )
