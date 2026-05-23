@@ -77,7 +77,12 @@ def main():
     parser.add_argument(
         "--pull",
         action="store_true",
-        help="Pull results and logs locally (excludes checkpoints by default)",
+        help=(
+            "Pull results, logs, and TensorBoard event files locally. "
+            "Excludes adapter weight dirs (checkpoint-*/ and final/) and "
+            "the preprocessed dataset by default; pass --pull-checkpoints "
+            "to also fetch adapter weights."
+        ),
     )
     parser.add_argument(
         "--pull-checkpoints",
@@ -133,10 +138,20 @@ def main():
     if args.logs:
         print(section("Pull TensorBoard logs + status"))
         os.makedirs(local_results, exist_ok=True)
+        # TB event files live in two places, depending on Trainer config:
+        #   1. Our requested path: <run>/.../logs/<model_label>/
+        #   2. HF Trainer default (often overrides ours):
+        #      <run>/.../checkpoints/<model_label>/runs/<timestamp>_<host>/
+        # Match both, plus catch-all on events.out.tfevents* in case the
+        # layout changes again.
         cmd = [
             "rsync", "-avz", "--progress",
-            "--include=*/", "--include=logs/***",
-            "--include=run_status.json", "--include=run_config.json",
+            "--include=*/",
+            "--include=logs/***",
+            "--include=runs/***",
+            "--include=events.out.tfevents*",
+            "--include=run_status.json",
+            "--include=run_config.json",
             "--exclude=*",
             f"{args.server}:{remote_dir}/results/", f"{local_results}/",
         ]
@@ -149,9 +164,22 @@ def main():
     if args.pull:
         print(section("Pull results"))
         os.makedirs(local_results, exist_ok=True)
-        excludes = []
+        # Always skip the preprocessed HF dataset (multi-MB arrow shards that
+        # are reproducible on the server and never needed locally) and the
+        # HF model cache (multi-GB).
+        excludes = [
+            "--exclude=*/preprocessed_dataset/",
+            "--exclude=hf_cache/",
+        ]
         if not args.pull_checkpoints:
-            excludes.append("--exclude=*/checkpoints/")
+            # Only skip the actual weight directories. The sibling `runs/`
+            # directory (where HF Trainer writes TensorBoard event files)
+            # is small and is what makes the train/eval curves usable
+            # locally, so we keep it by default.
+            excludes += [
+                "--exclude=*/checkpoints/*/checkpoint-*/",
+                "--exclude=*/checkpoints/*/final/",
+            ]
         pull = subprocess.run(
             ["rsync", "-avz", "--progress", *excludes,
              f"{args.server}:{remote_dir}/results/", f"{local_results}/"]
