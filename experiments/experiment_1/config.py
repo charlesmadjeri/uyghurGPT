@@ -20,6 +20,7 @@ class Experiment1Config:
     lora_rank: int = 16
     lora_alpha: int = 32
     per_device_train_batch_size: int = 4
+    per_device_eval_batch_size: int = 8
     gradient_accumulation_steps: int = 4
     max_seq_length: int = 512
     learning_rate: float = 2e-4
@@ -27,6 +28,16 @@ class Experiment1Config:
     flan_subset_size: int = 50_000
     flan_seed: int = 42
     preprocess_num_proc: int = 8
+
+    # Held-out fraction from the CUTE-P+FLAN mix for in-loop overfit detection.
+    # NOT the final "eval" — that's external benchmarks (FLORES+/WCM/C4 PPL).
+    # Split is at parallel-pair level for CUTE-P (see shared/data.py).
+    test_split_pct: float = 0.05
+    eval_steps: int = 50
+    # Stop training when eval_loss hasn't improved for N evaluations.
+    # 0 disables early stopping (still loads best checkpoint at end).
+    early_stopping_patience: int = 3
+    early_stopping_threshold: float = 0.0
 
     flores_max_samples: int | None = None
     wcm_max_samples: int | None = None
