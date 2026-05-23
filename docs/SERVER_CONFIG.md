@@ -368,6 +368,38 @@ Host-RAM levers if you ever need to push `--mem` even lower:
 - `flan_subset_size` 50_000 → 10_000 — caps the FLAN reservoir.
 - `--sample-count N` — caps CUTE-P upstream of everything.
 
+### 4.0.2 Throughput knobs (default since job 2632)
+
+Two opt-in throughput features are **on by default** in
+`experiments/experiment_1/config.py`:
+
+| Knob | Where | Effect | Disable |
+|------|-------|--------|---------|
+| **Sequence packing** | `SFTConfig(packing=True)` when TRL supports it | ~2-3x speedup on CUTE-P (most pairs <512 tokens) | `enable_packing=False` in config |
+| **FlashAttention 2** | `AutoModelForCausalLM(..., attn_implementation="flash_attention_2")` when `flash_attn` is importable | ~1.5x attention speedup | `UYGHURGPT_ATTN=sdpa` env var |
+
+Combined speedup is ~3-4x. `push.py --install-deps` attempts to
+`pip install --no-build-isolation flash-attn`; if the build fails on
+the cluster, the training code falls back to SDPA / eager and prints
+`[train] Loading ... attn=sdpa`.
+
+`Experiment1Config.sample_count` defaults to **100,000** CUTE-P pairs
+(~237k bidirectional + FLAN rows). Override at the CLI with
+`--sample-count N` (use `0`-ish small values for smoke runs, `--sample-count
+200000` or higher for stronger numbers — see ETA table below).
+
+| `--sample-count` | Wall-clock (packing+FA2, 3 ep) | Fits 5d cap? |
+|---|---:|:---:|
+| 10,000 | ~2 h | ✓ |
+| 50,000 | ~8 h | ✓ |
+| **100,000 (default)** | **~17 h** | ✓ |
+| 200,000 | ~1.25 d | ✓ |
+| 500,000 | ~2.9 d | ✓ |
+| full (~934k) | ~5.4 d | borderline |
+
+Early stopping (`patience=3`, eval every 50 steps) typically cuts 30-60%
+off when `eval_loss` plateaus.
+
 ### 4.1 Fresh run (preprocess + train + eval)
 
 ```bash
