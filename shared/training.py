@@ -42,6 +42,20 @@ def _sft_config_supports(name: str) -> bool:
         return False
 
 
+def _templatize_messages(ds, tokenizer):
+    """Render conversational rows to a single `text` field for SFT + collator."""
+
+    def _batch(batch):
+        return {
+            "text": [
+                tokenizer.apply_chat_template(m, tokenize=False)
+                for m in batch["messages"]
+            ]
+        }
+
+    return ds.map(_batch, batched=True, remove_columns=["messages"])
+
+
 def _filter_for_sft_config(kwargs: dict) -> dict:
     """Keep only kwargs accepted by the installed SFTConfig (TRL API varies by version)."""
     try:
@@ -96,32 +110,43 @@ def train(cfg, run_root: Path):
         print(f"[train] Splits: train={len(train_ds)}, test={len(test_ds)}")
     tokenizer = load_tokenizer(cfg.model)
 
-    # Decide dataset format. Modern TRL accepts conversational data
-    # ({"messages": [...]}) and can compute assistant-only loss natively
-    # via SFTConfig(assistant_only_loss=True). If the installed TRL is
-    # too old for that flag we templatize to a "text" column on the fly
-    # and rely on the completion-only collator if available, or train on
-    # the full sequence as a last resort (prefix loss is small).
+    # Loss masking on assistant tokens only. Prefer templated `text` +
+    # DataCollatorForCompletionOnlyLM: train and eval loss stay in sync and
+    # eval_loss is finite. TRL's assistant_only_loss=True on conversational
+    # data can log eval_loss=NaN when eval batches end up all -100 labels
+    # (truncation / mask edge cases; see trl#1053, trl#3927).
     is_conversational = "messages" in train_ds.column_names
-    use_assistant_only = is_conversational and _sft_config_supports("assistant_only_loss")
-    if is_conversational and not use_assistant_only:
+    collator_cls = _resolve_completion_only_collator()
+    use_collator = collator_cls is not None and is_conversational
+    use_assistant_only = (
+        is_conversational
+        and not use_collator
+        and _sft_config_supports("assistant_only_loss")
+    )
+    if use_collator:
         print(
-            "[train] Conversational dataset detected but TRL lacks "
-            "`assistant_only_loss`; templating to text on the fly."
+            "[train] Templating messages -> text and using "
+            "DataCollatorForCompletionOnlyLM (reliable train/eval loss)."
         )
-
-        def _templatize(batch):
-            return {
-                "text": [
-                    tokenizer.apply_chat_template(m, tokenize=False)
-                    for m in batch["messages"]
-                ]
-            }
-
-        train_ds = train_ds.map(_templatize, batched=True, remove_columns=["messages"])
+        train_ds = _templatize_messages(train_ds, tokenizer)
         if test_ds is not None:
-            test_ds = test_ds.map(_templatize, batched=True, remove_columns=["messages"])
+            test_ds = _templatize_messages(test_ds, tokenizer)
         is_conversational = False
+    elif is_conversational and not use_assistant_only:
+        print(
+            "[train] Conversational dataset but no completion collator and no "
+            "`assistant_only_loss`; templating to text, training on full sequence."
+        )
+        train_ds = _templatize_messages(train_ds, tokenizer)
+        if test_ds is not None:
+            test_ds = _templatize_messages(test_ds, tokenizer)
+        is_conversational = False
+    elif use_assistant_only and test_ds is not None:
+        print(
+            "[train] WARN: assistant_only_loss with in-loop eval can produce "
+            "eval_loss=NaN on some TRL builds; install a collator-capable TRL "
+            "or disable the test split."
+        )
 
     quant = bnb_config()
     print(f"[train] Loading {mid} (QLoRA={quant is not None}) ...")
@@ -147,26 +172,17 @@ def train(cfg, run_root: Path):
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
-    # Loss masking on the assistant turn only:
-    # - Modern TRL with conversational data: SFTConfig(assistant_only_loss=True)
-    #   is the canonical path and requires no extra collator (handled above).
-    # - Legacy TRL with text data: DataCollatorForCompletionOnlyLM (if present).
-    # - Otherwise: train on the full sequence. The system+user prefix is short
-    #   relative to the translation completion, so this is a correctness no-op
-    #   with a small sample-efficiency penalty.
     collator = None
-    if not is_conversational and not use_assistant_only:
-        CollatorCls = _resolve_completion_only_collator()
-        if CollatorCls is not None:
-            collator = CollatorCls(
-                response_template=response_template(cfg.model),
-                tokenizer=tokenizer,
-            )
-        else:
-            print(
-                "[train] No completion-only collator in this TRL build; "
-                "training on the full sequence (prefix loss is small)."
-            )
+    if use_collator:
+        collator = collator_cls(
+            response_template=response_template(cfg.model),
+            tokenizer=tokenizer,
+        )
+    elif not is_conversational and not use_assistant_only:
+        print(
+            "[train] No completion-only collator; training on the full sequence "
+            "(prefix loss is small)."
+        )
 
     # transformers >= 4.4x raises hard if report_to="tensorboard" is requested
     # but neither `tensorboard` nor `tensorboardX` is importable. Detect
