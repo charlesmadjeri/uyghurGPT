@@ -56,6 +56,70 @@ def _templatize_messages(ds, tokenizer):
     return ds.map(_batch, batched=True, remove_columns=["messages"])
 
 
+def _torch_supports_optimizer_checkpoint_load() -> bool:
+    """Transformers >=5.x blocks torch.load for optimizer state on torch<2.6 (CVE-2025-32434)."""
+    try:
+        from packaging.version import Version
+
+        return Version(torch.__version__.release) >= Version("2.6.0")
+    except Exception:
+        # packaging missing or odd version string — try resume and fall back on error.
+        return True
+
+
+def _quarantine_resume_state_files(checkpoint_dir: Path) -> list[str]:
+    """Move optimizer/scheduler/rng files aside so HF can resume step + adapter without torch.load."""
+    moved: list[str] = []
+    for name in ("optimizer.pt", "scheduler.pt", "rng_state.pth"):
+        src = checkpoint_dir / name
+        if not src.is_file():
+            continue
+        dst = checkpoint_dir / f"{name}.resume_skipped"
+        if dst.exists():
+            dst.unlink()
+        src.rename(dst)
+        moved.append(name)
+    return moved
+
+
+def _train_with_resume(trainer, checkpoint: str | None) -> None:
+    """Resume training from a HF checkpoint directory when possible.
+
+    LoRA adapter weights are always in safetensors under the checkpoint.
+    Full resume also reloads optimizer/scheduler via torch.load, which
+    transformers now requires torch>=2.6. On older torch (our cu121 pin),
+    we quarantine those files and resume with a fresh optimizer while
+    keeping global_step from trainer_state.json.
+    """
+    if not checkpoint:
+        trainer.train()
+        return
+
+    ckpt = Path(checkpoint)
+    if _torch_supports_optimizer_checkpoint_load():
+        print(f"[train] Resuming from {checkpoint} (full state)")
+        trainer.train(resume_from_checkpoint=checkpoint)
+        return
+
+    print(
+        f"[train] torch {torch.__version__} < 2.6: cannot reload optimizer.pt "
+        f"(transformers CVE-2025-32434 guard). Trying step resume without optimizer state."
+    )
+    moved = _quarantine_resume_state_files(ckpt)
+    if moved:
+        print(f"[train] Quarantined {moved} under {checkpoint}")
+    try:
+        trainer.train(resume_from_checkpoint=checkpoint)
+    except ValueError as exc:
+        if "upgrade torch" not in str(exc).lower() and "torch.load" not in str(exc).lower():
+            raise
+        print(
+            "[train] Step resume still blocked by torch.load; continuing with loaded "
+            "adapter weights and a fresh optimizer (global step resets — prefer upgrading torch>=2.6)."
+        )
+        trainer.train()
+
+
 def _filter_for_sft_config(kwargs: dict) -> dict:
     """Keep only kwargs accepted by the installed SFTConfig (TRL API varies by version)."""
     try:
@@ -169,7 +233,18 @@ def train(cfg, run_root: Path):
         bias="none",
         task_type="CAUSAL_LM",
     )
-    model = get_peft_model(model, peft_config)
+
+    last = get_last_checkpoint(str(ckpt_root))
+    adapter_ckpt = last if last and any(Path(last).glob("adapter_*")) else None
+
+    if adapter_ckpt and not _torch_supports_optimizer_checkpoint_load():
+        # Adapter weights via safetensors; optimizer resume blocked on torch<2.6.
+        from peft import PeftModel
+
+        print(f"[train] Loading LoRA adapter weights from {adapter_ckpt}")
+        model = PeftModel.from_pretrained(model, adapter_ckpt)
+    else:
+        model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
     collator = None
@@ -294,12 +369,7 @@ def train(cfg, run_root: Path):
     trainer = SFTTrainer(**trainer_kwargs)
 
     write_run_status(run_root, "training", {"checkpoint_dir": str(ckpt_root)})
-    last = get_last_checkpoint(str(ckpt_root))
-    if last:
-        print(f"[train] Resuming from {last}")
-        trainer.train(resume_from_checkpoint=last)
-    else:
-        trainer.train()
+    _train_with_resume(trainer, adapter_ckpt)
 
     trainer.save_model(str(ckpt_root / "final"))
     write_run_status(run_root, "trained", {"checkpoint_dir": str(ckpt_root)})
