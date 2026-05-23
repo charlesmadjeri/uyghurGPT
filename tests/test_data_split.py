@@ -169,6 +169,42 @@ def test_streaming_path_no_pair_leakage(tmp_path, monkeypatch):
     assert len(ds_dict["test"]) == 2 * len(test_ids)
 
 
+def test_streaming_skips_overlong_lines(tmp_path, monkeypatch):
+    """Outlier CUTE-P lines are dropped before tokenization."""
+    from shared import data
+
+    n = 20
+    en_lines = [f"en-{i}" for i in range(n)]
+    ug_lines = [f"ug-{i}" for i in range(n)]
+    en_lines[5] = "x" * 10_000
+    en_path = tmp_path / "en.txt"
+    ug_path = tmp_path / "uy.txt"
+    en_path.write_text("\n".join(en_lines) + "\n")
+    ug_path.write_text("\n".join(ug_lines) + "\n")
+
+    monkeypatch.setattr(data, "_local_cute_paths", lambda: (en_path, ug_path))
+    monkeypatch.setattr(data, "load_flan_en_only", lambda *a, **k: [])
+
+    class Cfg:
+        model = "qwen"
+        mix = 0
+        sample_count = None
+        flan_seed = 42
+        flan_subset_size = 0
+        test_split_pct = 0.0
+        max_seq_length = 512
+
+    ds_dict = data.build_training_dataset(Cfg())
+    ids = set()
+    for row in ds_dict["train"]:
+        for msg in row["messages"]:
+            if msg["content"].startswith("en-"):
+                ids.add(int(msg["content"].split("-")[1]))
+                break
+    assert 5 not in ids
+    assert len(ds_dict["train"]) == 2 * (n - 1)
+
+
 def test_each_pair_appears_in_both_directions(monkeypatch):
     """Bidirectional expansion: every kept pair produces exactly one en2ug AND one ug2en."""
     from shared import data

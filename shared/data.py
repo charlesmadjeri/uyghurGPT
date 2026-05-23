@@ -30,6 +30,24 @@ FLAN_REPO = "Muennighoff/flan"
 DEFAULT_LOCAL_EN = os.path.expanduser("~/uyghurGPT/dataset/en.txt")
 DEFAULT_LOCAL_UG = os.path.expanduser("~/uyghurGPT/dataset/uy.txt")
 
+# Per message field, before chat templating (~4 chars/token is conservative).
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def max_line_chars(max_seq_length: int) -> int:
+    return max_seq_length * _CHARS_PER_TOKEN_ESTIMATE
+
+
+def _line_within_budget(text: str, max_chars: int) -> bool:
+    return len(text) <= max_chars
+
+
+def messages_within_char_budget(example: dict, max_chars: int) -> bool:
+    """True when every message ``content`` fits the preprocess char cap."""
+    return all(
+        len(m.get("content", "")) <= max_chars for m in example.get("messages", [])
+    )
+
 
 def _ensure_cute_local(en_path: str, ug_path: str) -> None:
     """Download CUTE-P EN+UG parallel files from the Hub to local paths.
@@ -251,13 +269,24 @@ def _local_cute_paths() -> tuple["Path", "Path"] | None:
     return None
 
 
-def _stream_cute_rows(en_path, ug_path, kept_indices, sample_count=None):
+def _stream_cute_rows(
+    en_path,
+    ug_path,
+    kept_indices,
+    sample_count=None,
+    max_line_chars=2048,
+    _skip_stats=None,
+):
     """Stream bidirectional CUTE-P rows directly from disk (RAM-bounded).
 
     For the full ~934k-pair corpus, holding both lines lists in Python
     already costs ~12 GB; expanding to row dicts costs another
     ~30-50 GB. Streaming line-by-line keeps preprocess peak RAM in the
     low tens of MB regardless of corpus size.
+
+    Pairs whose EN or UG field exceeds ``max_line_chars`` are dropped
+  (CUTE-P has rare document-scale outliers that would otherwise trigger
+    tokenizer warnings and waste tokenization time).
     """
     kept = set(kept_indices)
     with open(en_path, "r", encoding="utf-8") as fe, open(
@@ -270,6 +299,13 @@ def _stream_cute_rows(en_path, ug_path, kept_indices, sample_count=None):
                 continue
             en = en.rstrip("\n")
             ug = ug.rstrip("\n")
+            if not (
+                _line_within_budget(en, max_line_chars)
+                and _line_within_budget(ug, max_line_chars)
+            ):
+                if _skip_stats is not None:
+                    _skip_stats["pairs"] = _skip_stats.get("pairs", 0) + 1
+                continue
             yield {
                 "messages": _translation_messages(en, ug, "English", "Uyghur"),
                 "task": "en2ug",
@@ -280,7 +316,13 @@ def _stream_cute_rows(en_path, ug_path, kept_indices, sample_count=None):
             }
 
 
-def _cute_row_iter(en_lines, ug_lines, indices):
+def _cute_row_iter(
+    en_lines,
+    ug_lines,
+    indices,
+    max_line_chars=2048,
+    _skip_stats=None,
+):
     """In-memory bidirectional row generator (test fallback only).
 
     Production hits ``_stream_cute_rows`` instead; this path runs when
@@ -289,6 +331,13 @@ def _cute_row_iter(en_lines, ug_lines, indices):
     """
     for i in indices:
         en, ug = en_lines[i], ug_lines[i]
+        if not (
+            _line_within_budget(en, max_line_chars)
+            and _line_within_budget(ug, max_line_chars)
+        ):
+            if _skip_stats is not None:
+                _skip_stats["pairs"] = _skip_stats.get("pairs", 0) + 1
+            continue
         yield {
             "messages": _translation_messages(en, ug, "English", "Uyghur"),
             "task": "en2ug",
@@ -299,10 +348,18 @@ def _cute_row_iter(en_lines, ug_lines, indices):
         }
 
 
-def _flan_row_iter(flan_items):
+def _flan_row_iter(flan_items, max_line_chars=2048, _skip_stats=None):
     for it in flan_items:
+        en, ug = it["EN"], it["UG"]
+        if not (
+            _line_within_budget(en, max_line_chars)
+            and _line_within_budget(ug, max_line_chars)
+        ):
+            if _skip_stats is not None:
+                _skip_stats["flan"] = _skip_stats.get("flan", 0) + 1
+            continue
         yield {
-            "messages": _flan_messages(it["EN"], it["UG"]),
+            "messages": _flan_messages(en, ug),
             "task": "flan_en",
         }
 
@@ -355,6 +412,8 @@ def build_training_dataset(cfg) -> "DatasetDict":
 
     seed = cfg.flan_seed
     test_pct = float(getattr(cfg, "test_split_pct", 0.0) or 0.0)
+    line_char_cap = max_line_chars(getattr(cfg, "max_seq_length", 512))
+    skip_stats: dict[str, int] = {}
 
     paths = _local_cute_paths()
     if paths is not None:
@@ -380,6 +439,8 @@ def build_training_dataset(cfg) -> "DatasetDict":
                 "ug_path": str(ug_path),
                 "kept_indices": train_idx,
                 "sample_count": cfg.sample_count,
+                "max_line_chars": line_char_cap,
+                "_skip_stats": skip_stats,
             },
         )
         print(f"[data] CUTE train rows materialised: {len(train_ds)}")
@@ -392,6 +453,8 @@ def build_training_dataset(cfg) -> "DatasetDict":
                     "ug_path": str(ug_path),
                     "kept_indices": test_idx,
                     "sample_count": cfg.sample_count,
+                    "max_line_chars": line_char_cap,
+                    "_skip_stats": skip_stats,
                 },
             )
             print(f"[data] CUTE test rows materialised: {len(test_ds)}")
@@ -405,13 +468,25 @@ def build_training_dataset(cfg) -> "DatasetDict":
         )
         train_ds = _build_dataset_from_gen(
             _cute_row_iter,
-            {"en_lines": en_lines, "ug_lines": ug_lines, "indices": train_idx},
+            {
+                "en_lines": en_lines,
+                "ug_lines": ug_lines,
+                "indices": train_idx,
+                "max_line_chars": line_char_cap,
+                "_skip_stats": skip_stats,
+            },
         )
         test_ds = None
         if test_idx:
             test_ds = _build_dataset_from_gen(
                 _cute_row_iter,
-                {"en_lines": en_lines, "ug_lines": ug_lines, "indices": test_idx},
+                {
+                    "en_lines": en_lines,
+                    "ug_lines": ug_lines,
+                    "indices": test_idx,
+                    "max_line_chars": line_char_cap,
+                    "_skip_stats": skip_stats,
+                },
             )
         del en_lines, ug_lines
 
@@ -422,7 +497,12 @@ def build_training_dataset(cfg) -> "DatasetDict":
 
     if flan_items:
         flan_ds = _build_dataset_from_gen(
-            _flan_row_iter, {"flan_items": flan_items}
+            _flan_row_iter,
+            {
+                "flan_items": flan_items,
+                "max_line_chars": line_char_cap,
+                "_skip_stats": skip_stats,
+            },
         )
         if test_pct > 0.0 and len(flan_ds) >= 10:
             flan_split = flan_ds.train_test_split(test_size=test_pct, seed=seed + 1)
@@ -435,6 +515,17 @@ def build_training_dataset(cfg) -> "DatasetDict":
         else:
             train_ds = concatenate_datasets([train_ds, flan_ds])
         del flan_items, flan_ds
+
+    if skip_stats:
+        parts = []
+        if skip_stats.get("pairs"):
+            parts.append(f"{skip_stats['pairs']} CUTE-P pair(s)")
+        if skip_stats.get("flan"):
+            parts.append(f"{skip_stats['flan']} FLAN row(s)")
+        print(
+            f"[data] Skipped {' and '.join(parts)} over {line_char_cap} chars/field "
+            f"(max_seq_length={getattr(cfg, 'max_seq_length', 512)})"
+        )
 
     train_ds = train_ds.shuffle(seed=seed)
     if test_ds is None:
