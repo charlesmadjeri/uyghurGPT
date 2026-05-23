@@ -23,23 +23,47 @@ if TYPE_CHECKING:  # heavy ML deps are imported lazily inside functions
     from datasets import DatasetDict
 
 CUTE_DATASETS_REPO = "CMLI-NLP/CUTE-Datasets"
-HF_EN_PATH = f"datasets/{CUTE_DATASETS_REPO}/parallel-corpus/en.txt"
-HF_UG_PATH = f"datasets/{CUTE_DATASETS_REPO}/parallel-corpus/uy.txt"
+CUTE_EN_HUB_FILE = "parallel-corpus/en.txt"
+CUTE_UG_HUB_FILE = "parallel-corpus/uy.txt"
 FLAN_REPO = "Muennighoff/flan"
 
 DEFAULT_LOCAL_EN = os.path.expanduser("~/uyghurGPT/dataset/en.txt")
 DEFAULT_LOCAL_UG = os.path.expanduser("~/uyghurGPT/dataset/uy.txt")
 
 
-def _read_n_lines_hf(fs, path: str, n: int) -> list[str]:
-    lines = []
-    with fs.open(path, "r", encoding="utf-8") as f:
-        for _ in range(n):
-            line = f.readline()
-            if not line:
-                break
-            lines.append(line.rstrip("\n"))
-    return lines
+def _ensure_cute_local(en_path: str, ug_path: str) -> None:
+    """Download CUTE-P EN+UG parallel files from the Hub to local paths.
+
+    One-time per machine: ~10.9 GB total. Reuses HF cache (HF_HOME) so a
+    crashed/cancelled download resumes on retry. Atomic copy into the
+    target paths so a partial run never leaves a half-written file
+    that ``load_cute_parallel_lines`` would silently use.
+    """
+    import shutil
+
+    from huggingface_hub import hf_hub_download
+
+    token = os.environ.get("HF_TOKEN")
+    pairs = (
+        (CUTE_EN_HUB_FILE, en_path),
+        (CUTE_UG_HUB_FILE, ug_path),
+    )
+    for hub_file, dst in pairs:
+        if Path(dst).is_file() and Path(dst).stat().st_size > 0:
+            continue
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        print(f"[data] Downloading {CUTE_DATASETS_REPO}:{hub_file} -> {dst}")
+        cached = hf_hub_download(
+            repo_id=CUTE_DATASETS_REPO,
+            filename=hub_file,
+            repo_type="dataset",
+            token=token,
+        )
+        tmp = Path(dst).with_suffix(Path(dst).suffix + ".part")
+        shutil.copyfile(cached, tmp)
+        tmp.replace(dst)
+        size_gb = Path(dst).stat().st_size / 1e9
+        print(f"[data] Wrote {dst} ({size_gb:.2f} GB)")
 
 
 def load_cute_parallel_lines(
@@ -47,23 +71,21 @@ def load_cute_parallel_lines(
     en_path: str | None = None,
     ug_path: str | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Load aligned EN/UG lines from local files or HuggingFace Hub."""
+    """Load aligned EN/UG lines from local files, fetching from Hub on first use.
+
+    If either local file is missing, both CUTE-P parallel files are
+    downloaded from ``CMLI-NLP/CUTE-Datasets`` and persisted under
+    ``~/uyghurGPT/dataset/`` (one-time ~10.9 GB), so subsequent
+    preprocess runs hit disk directly and stay memory-bounded.
+    """
     en_path = en_path or DEFAULT_LOCAL_EN
     ug_path = ug_path or DEFAULT_LOCAL_UG
 
-    if Path(en_path).is_file() and Path(ug_path).is_file():
-        en_lines = Path(en_path).read_text(encoding="utf-8").splitlines()
-        ug_lines = Path(ug_path).read_text(encoding="utf-8").splitlines()
-        source = "local"
-    else:
-        from huggingface_hub import HfFileSystem
+    if not (Path(en_path).is_file() and Path(ug_path).is_file()):
+        _ensure_cute_local(en_path, ug_path)
 
-        token = os.environ.get("HF_TOKEN")
-        fs = HfFileSystem(token=token)
-        n = sample_count or 10_000
-        en_lines = _read_n_lines_hf(fs, HF_EN_PATH, n)
-        ug_lines = _read_n_lines_hf(fs, HF_UG_PATH, n)
-        source = "huggingface"
+    en_lines = Path(en_path).read_text(encoding="utf-8").splitlines()
+    ug_lines = Path(ug_path).read_text(encoding="utf-8").splitlines()
 
     n = min(len(en_lines), len(ug_lines))
     en_lines, ug_lines = en_lines[:n], ug_lines[:n]
@@ -71,7 +93,7 @@ def load_cute_parallel_lines(
         n = min(sample_count, n)
         en_lines, ug_lines = en_lines[:n], ug_lines[:n]
 
-    print(f"[data] CUTE-P pairs={n} source={source}")
+    print(f"[data] CUTE-P pairs={n} source=local path={en_path}")
     return en_lines, ug_lines
 
 
@@ -188,6 +210,120 @@ def _split_pair_indices(
     return train_idx, test_idx
 
 
+def _count_lines(path: "Path") -> int:
+    """Count newlines in *path*; cache result in ``<path>.lines`` so the
+    full ~12 GB sweep happens only once per machine."""
+    cache = Path(str(path) + ".lines")
+    if cache.is_file():
+        try:
+            return int(cache.read_text().strip())
+        except Exception:
+            pass
+    n = 0
+    with open(path, "rb", buffering=1 << 20) as f:
+        for _ in f:
+            n += 1
+    try:
+        cache.write_text(str(n))
+    except OSError:
+        pass
+    return n
+
+
+def _local_cute_paths() -> tuple["Path", "Path"] | None:
+    """Return local CUTE-P paths, downloading on first use; ``None`` if
+    no local files exist and the download is unavailable (e.g. in tests
+    without ``HF_TOKEN``).
+    """
+    en_path = Path(DEFAULT_LOCAL_EN)
+    ug_path = Path(DEFAULT_LOCAL_UG)
+    if not (en_path.is_file() and ug_path.is_file()):
+        try:
+            _ensure_cute_local(str(en_path), str(ug_path))
+        except Exception as e:  # noqa: BLE001 — fall back is intentional
+            print(
+                f"[data] WARN: streaming source unavailable "
+                f"({type(e).__name__}: {e}); using in-memory loader"
+            )
+            return None
+    if en_path.is_file() and ug_path.is_file():
+        return en_path, ug_path
+    return None
+
+
+def _stream_cute_rows(en_path, ug_path, kept_indices, sample_count=None):
+    """Stream bidirectional CUTE-P rows directly from disk (RAM-bounded).
+
+    For the full ~934k-pair corpus, holding both lines lists in Python
+    already costs ~12 GB; expanding to row dicts costs another
+    ~30-50 GB. Streaming line-by-line keeps preprocess peak RAM in the
+    low tens of MB regardless of corpus size.
+    """
+    kept = set(kept_indices)
+    with open(en_path, "r", encoding="utf-8") as fe, open(
+        ug_path, "r", encoding="utf-8"
+    ) as fu:
+        for i, (en, ug) in enumerate(zip(fe, fu)):
+            if sample_count is not None and i >= sample_count:
+                break
+            if i not in kept:
+                continue
+            en = en.rstrip("\n")
+            ug = ug.rstrip("\n")
+            yield {
+                "messages": _translation_messages(en, ug, "English", "Uyghur"),
+                "task": "en2ug",
+            }
+            yield {
+                "messages": _translation_messages(ug, en, "Uyghur", "English"),
+                "task": "ug2en",
+            }
+
+
+def _cute_row_iter(en_lines, ug_lines, indices):
+    """In-memory bidirectional row generator (test fallback only).
+
+    Production hits ``_stream_cute_rows`` instead; this path runs when
+    local files are absent (tests with monkeypatched
+    ``load_cute_parallel_lines``).
+    """
+    for i in indices:
+        en, ug = en_lines[i], ug_lines[i]
+        yield {
+            "messages": _translation_messages(en, ug, "English", "Uyghur"),
+            "task": "en2ug",
+        }
+        yield {
+            "messages": _translation_messages(ug, en, "Uyghur", "English"),
+            "task": "ug2en",
+        }
+
+
+def _flan_row_iter(flan_items):
+    for it in flan_items:
+        yield {
+            "messages": _flan_messages(it["EN"], it["UG"]),
+            "task": "flan_en",
+        }
+
+
+def _build_dataset_from_gen(generator, gen_kwargs: dict):
+    """Stream rows into an on-disk Arrow Dataset (writer batch = 1k).
+
+    ``Dataset.from_generator`` auto-shards on **list**-typed gen_kwargs
+    for multi-process generation, which corrupts our shared line lists
+    (it would slice them and pass a partial copy to each shard). Cast
+    every list to a tuple so the builder treats them as opaque inputs
+    and runs the generator exactly once, in-process.
+    """
+    from datasets import Dataset
+
+    safe_kwargs = {
+        k: tuple(v) if isinstance(v, list) else v for k, v in gen_kwargs.items()
+    }
+    return Dataset.from_generator(generator, gen_kwargs=safe_kwargs)
+
+
 def build_training_dataset(cfg) -> "DatasetDict":
     """Build Mix-{N} instruction dataset (bidirectional CUTE-P + FLAN EN-only).
 
@@ -203,62 +339,109 @@ def build_training_dataset(cfg) -> "DatasetDict":
       - FLAN samples are row-level (no pair structure); they get an
         independent same-percentage split.
 
+    Memory policy:
+      - When local CUTE-P files exist (``_local_cute_paths``), rows are
+        **streamed from disk** line-by-line and written into Arrow in
+        1k-row batches; preprocess peak RAM stays under ~1 GB
+        regardless of corpus size.
+      - When they don't (test fixture, no local files), we fall back
+        to the in-memory generator over Python lists provided by
+        ``load_cute_parallel_lines`` — only safe for small samples.
+
     The external/final evaluation (FLORES+ devtest, WCM-v2, C4 PPL) is
-    performed by `shared/evaluation.py` and is unrelated to this split.
+    performed by ``shared/evaluation.py`` and is unrelated to this split.
     """
-    en_lines, ug_lines = load_cute_parallel_lines(cfg.sample_count)
+    from datasets import concatenate_datasets
+
     seed = cfg.flan_seed
     test_pct = float(getattr(cfg, "test_split_pct", 0.0) or 0.0)
 
-    train_idx, test_idx = _split_pair_indices(len(en_lines), test_pct, seed)
-
-    def _expand(indices: list[int]) -> list[dict]:
-        out: list[dict] = []
-        for i in indices:
-            en, ug = en_lines[i], ug_lines[i]
-            out.append(
+    paths = _local_cute_paths()
+    if paths is not None:
+        en_path, ug_path = paths
+        n_en = _count_lines(en_path)
+        n_ug = _count_lines(ug_path)
+        n_pairs = min(n_en, n_ug)
+        if cfg.sample_count is not None:
+            n_pairs = min(n_pairs, cfg.sample_count)
+        print(
+            f"[data] CUTE-P pairs={n_pairs} source=local-stream "
+            f"path={en_path}"
+        )
+        train_idx, test_idx = _split_pair_indices(n_pairs, test_pct, seed)
+        print(
+            f"[data] Building Arrow splits: pairs train={len(train_idx)} "
+            f"test={len(test_idx)} (test_pct={test_pct:.2%})"
+        )
+        train_ds = _build_dataset_from_gen(
+            _stream_cute_rows,
+            {
+                "en_path": str(en_path),
+                "ug_path": str(ug_path),
+                "kept_indices": train_idx,
+                "sample_count": cfg.sample_count,
+            },
+        )
+        print(f"[data] CUTE train rows materialised: {len(train_ds)}")
+        test_ds = None
+        if test_idx:
+            test_ds = _build_dataset_from_gen(
+                _stream_cute_rows,
                 {
-                    "messages": _translation_messages(en, ug, "English", "Uyghur"),
-                    "task": "en2ug",
-                }
+                    "en_path": str(en_path),
+                    "ug_path": str(ug_path),
+                    "kept_indices": test_idx,
+                    "sample_count": cfg.sample_count,
+                },
             )
-            out.append(
-                {
-                    "messages": _translation_messages(ug, en, "Uyghur", "English"),
-                    "task": "ug2en",
-                }
+            print(f"[data] CUTE test rows materialised: {len(test_ds)}")
+    else:
+        en_lines, ug_lines = load_cute_parallel_lines(cfg.sample_count)
+        train_idx, test_idx = _split_pair_indices(len(en_lines), test_pct, seed)
+        print(
+            f"[data] Building Arrow splits (in-memory): pairs "
+            f"train={len(train_idx)} test={len(test_idx)} "
+            f"(test_pct={test_pct:.2%})"
+        )
+        train_ds = _build_dataset_from_gen(
+            _cute_row_iter,
+            {"en_lines": en_lines, "ug_lines": ug_lines, "indices": train_idx},
+        )
+        test_ds = None
+        if test_idx:
+            test_ds = _build_dataset_from_gen(
+                _cute_row_iter,
+                {"en_lines": en_lines, "ug_lines": ug_lines, "indices": test_idx},
             )
-        return out
+        del en_lines, ug_lines
 
-    train_rows = _expand(train_idx)
-    test_rows = _expand(test_idx)
-
-    # FLAN: scale based on the TRAINING pair count, not the full corpus,
-    # so the mix ratio remains accurate after holding out the test pairs.
+    # FLAN scales on the TRAINING pair count, so the mix ratio is preserved
+    # after holding out the test pairs.
     flan_n = _flan_count_for_mix(len(train_idx), cfg.mix)
     flan_items = load_flan_en_only(flan_n, seed, cfg.flan_subset_size)
-    flan_rows = [
-        {
-            "messages": _flan_messages(it["EN"], it["UG"]),
-            "task": "flan_en",
-        }
-        for it in flan_items
-    ]
-    if test_pct > 0.0 and len(flan_rows) >= 10:
-        rng = random.Random(seed + 1)
-        rng.shuffle(flan_rows)
-        n_flan_test = max(1, int(round(len(flan_rows) * test_pct)))
-        test_rows.extend(flan_rows[:n_flan_test])
-        train_rows.extend(flan_rows[n_flan_test:])
-    else:
-        train_rows.extend(flan_rows)
 
-    train_ds = _new_dataset_from_list(train_rows).shuffle(seed=seed)
-    if not test_rows:
+    if flan_items:
+        flan_ds = _build_dataset_from_gen(
+            _flan_row_iter, {"flan_items": flan_items}
+        )
+        if test_pct > 0.0 and len(flan_ds) >= 10:
+            flan_split = flan_ds.train_test_split(test_size=test_pct, seed=seed + 1)
+            train_ds = concatenate_datasets([train_ds, flan_split["train"]])
+            test_ds = (
+                concatenate_datasets([test_ds, flan_split["test"]])
+                if test_ds is not None
+                else flan_split["test"]
+            )
+        else:
+            train_ds = concatenate_datasets([train_ds, flan_ds])
+        del flan_items, flan_ds
+
+    train_ds = train_ds.shuffle(seed=seed)
+    if test_ds is None:
         print(f"[data] Training examples={len(train_ds)} (mix={cfg.mix}%, no test split)")
         return _new_dataset_dict(train=train_ds)
 
-    test_ds = _new_dataset_from_list(test_rows).shuffle(seed=seed + 1)
+    test_ds = test_ds.shuffle(seed=seed + 1)
     print(
         f"[data] Mix={cfg.mix}% pairs(train={len(train_idx)}, test={len(test_idx)}, "
         f"test_pct={test_pct:.2%}) -> rows train={len(train_ds)}, test={len(test_ds)} "
