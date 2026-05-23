@@ -287,7 +287,8 @@ still need `tensorboard` installed for TensorBoard logging:
 
 | Symptom | Fix |
 |---------|-----|
-| `cannot import name 'DataCollatorForCompletionOnlyLM' from 'trl'` | Install a TRL build that exports the collator, or let code fall back to `assistant_only_loss` / full-sequence training. |
+| `cannot import name 'DataCollatorForCompletionOnlyLM' from 'trl'` | Fixed — vendored in `shared/completion_collator.py`; used when `enable_packing=False`. |
+| `eval_loss` is `NaN` during in-loop eval | Fixed — default path uses TRL `assistant_only_loss` with `eval_packing=False`; collator path when packing is off. |
 | `SFTConfig: ignoring unsupported keys ['max_seq_length']` | Harmless on TRL 1.4 — code maps `max_seq_length` → `max_length=512`. |
 | `PeftModel` instance together with a `peft_config` | Do not pass `peft_config` when model is already wrapped (`shared/training.py` handles this). |
 | `Token indices sequence length is longer than ...` during tokenize | One outlier CUTE-P line; training still truncates to `max_length=512`. Safe to ignore unless training crashes on position indices. |

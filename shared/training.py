@@ -24,20 +24,25 @@ from utils.io import checkpoint_dir, write_run_status
 
 
 def _resolve_completion_only_collator():
-    """Return DataCollatorForCompletionOnlyLM if available, else None.
+    """Return DataCollatorForCompletionOnlyLM (TRL export or local vendored copy).
 
-    TRL >= 0.20 removed the top-level export in favour of SFTConfig's
-    built-in assistant-only loss masking. We tolerate both layouts.
+    TRL >= 1.0 removed the top-level export; cluster TRL 1.4 has no
+    collator class at all. The local copy in ``shared.completion_collator``
+    keeps train/eval loss masking identical and finite.
     """
     try:
         from trl import DataCollatorForCompletionOnlyLM as _Collator  # type: ignore
         return _Collator
     except ImportError:
-        try:
-            from trl.trainer.utils import DataCollatorForCompletionOnlyLM as _Collator  # type: ignore
-            return _Collator
-        except ImportError:
-            return None
+        pass
+    try:
+        from trl.trainer.utils import DataCollatorForCompletionOnlyLM as _Collator  # type: ignore
+        return _Collator
+    except ImportError:
+        pass
+    from shared.completion_collator import DataCollatorForCompletionOnlyLM
+
+    return DataCollatorForCompletionOnlyLM
 
 
 def _sft_config_supports(name: str) -> bool:
@@ -180,20 +185,39 @@ def train(cfg, run_root: Path):
         print(f"[train] Splits: train={len(train_ds)}, test={len(test_ds)}")
     tokenizer = load_tokenizer(cfg.model)
 
-    # Loss masking on assistant tokens only. Prefer templated `text` +
-    # DataCollatorForCompletionOnlyLM: train and eval loss stay in sync and
-    # eval_loss is finite. TRL's assistant_only_loss=True on conversational
-    # data can log eval_loss=NaN when eval batches end up all -100 labels
-    # (truncation / mask edge cases; see trl#1053, trl#3927).
+    # Loss masking on assistant tokens only.
+    #
+    # TRL 1.4 removed DataCollatorForCompletionOnlyLM; we vendor it in
+    # shared.completion_collator. Two supported paths:
+    #
+    # 1. packing=True (default): keep conversational rows; TRL's native
+    #    assistant_only_loss + assistant_masks during tokenize. Set
+    #    eval_packing=False so in-loop eval runs unpacked (finite eval_loss).
+    #
+    # 2. packing=False: template messages -> text and use the completion
+    #    collator (same masking, works on all TRL versions).
     is_conversational = "messages" in train_ds.column_names
     collator_cls = _resolve_completion_only_collator()
-    use_collator = collator_cls is not None and is_conversational
-    use_assistant_only = (
+    want_packing = (
+        getattr(cfg, "enable_packing", False)
+        and not smoke
+        and _sft_config_supports("packing")
+    )
+    use_native_trl_masking = (
         is_conversational
-        and not use_collator
+        and want_packing
         and _sft_config_supports("assistant_only_loss")
     )
-    if use_collator:
+    use_collator = is_conversational and collator_cls is not None and not use_native_trl_masking
+    use_assistant_only = use_native_trl_masking
+
+    if use_native_trl_masking:
+        print(
+            "[train] TRL assistant_only_loss (conversational, train packing"
+            + (", eval unpacked" if test_ds is not None else "")
+            + ") for reliable eval_loss."
+        )
+    elif use_collator:
         print(
             "[train] Templating messages -> text and using "
             "DataCollatorForCompletionOnlyLM (reliable train/eval loss)."
@@ -202,21 +226,15 @@ def train(cfg, run_root: Path):
         if test_ds is not None:
             test_ds = _templatize_messages(test_ds, tokenizer)
         is_conversational = False
-    elif is_conversational and not use_assistant_only:
+    elif is_conversational:
         print(
-            "[train] Conversational dataset but no completion collator and no "
-            "`assistant_only_loss`; templating to text, training on full sequence."
+            "[train] Conversational dataset without packing or collator; "
+            "templating to text, training on full sequence."
         )
         train_ds = _templatize_messages(train_ds, tokenizer)
         if test_ds is not None:
             test_ds = _templatize_messages(test_ds, tokenizer)
         is_conversational = False
-    elif use_assistant_only and test_ds is not None:
-        print(
-            "[train] WARN: assistant_only_loss with in-loop eval can produce "
-            "eval_loss=NaN on some TRL builds; install a collator-capable TRL "
-            "or disable the test split."
-        )
 
     quant = bnb_config()
     attn = attn_implementation()
@@ -313,18 +331,16 @@ def train(cfg, run_root: Path):
     else:
         sft_kwargs["dataset_text_field"] = "text"
 
-    # Sequence packing: concatenate multiple short rows into a single
-    # max_length chunk, drastically increasing throughput on corpora
-    # like CUTE-P whose median pair is well under 512 tokens. Skipped
-    # for smoke runs (their max_steps cap makes the speedup irrelevant
-    # and packing+masking edge cases are easier to debug without it).
-    if (
-        getattr(cfg, "enable_packing", False)
-        and not smoke
-        and _sft_config_supports("packing")
-    ):
+    if want_packing and use_native_trl_masking:
         sft_kwargs["packing"] = True
+        if test_ds is not None and _sft_config_supports("eval_packing"):
+            sft_kwargs["eval_packing"] = False
         print("[train] Sequence packing enabled (packing=True).")
+    elif want_packing and use_collator:
+        print(
+            "[train] Sequence packing skipped (incompatible with completion "
+            "collator; set enable_packing=False or rely on TRL native path)."
+        )
 
     # In-loop overfit detector + best-checkpoint policy:
     # When we have a held-out `test` split, evaluate every `eval_steps`,
