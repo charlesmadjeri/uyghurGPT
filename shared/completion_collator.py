@@ -9,7 +9,6 @@ masking (assistant tokens only) without relying on
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -27,15 +26,23 @@ def _find_subsequence(sequence: list[int], subseq: list[int]) -> int:
     return -1
 
 
-@dataclass
 class DataCollatorForCompletionOnlyLM(DataCollatorForLanguageModeling):
-    """Mask labels to the assistant completion (response template onward)."""
+    """Mask labels to the assistant completion (response template onward).
 
-    response_template: str | list[int]
-    instruction_template: str | list[int] | None = None
+    Not a ``@dataclass`` subclass: ``DataCollatorForLanguageModeling`` already
+    declares fields with defaults, and Python forbids adding a required field
+  after those defaults in a child dataclass.
+    """
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
+    def __init__(
+        self,
+        response_template: str | list[int],
+        instruction_template: str | list[int] | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.response_template = response_template
+        self.instruction_template = instruction_template
         if self.tokenizer is None:
             raise ValueError("DataCollatorForCompletionOnlyLM requires a tokenizer.")
 

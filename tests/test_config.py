@@ -38,6 +38,16 @@ def test_experiment1_to_dict_is_json_safe():
     json.dumps(payload)
 
 
+def test_attn_supports_packing():
+    pytest.importorskip("transformers")
+    from shared.models import attn_supports_packing
+
+    assert attn_supports_packing("flash_attention_2")
+    assert attn_supports_packing("flash_attention_3")
+    assert not attn_supports_packing("sdpa")
+    assert not attn_supports_packing("eager")
+
+
 def test_resolve_completion_only_collator_always_available():
     pytest.importorskip("transformers")
     from shared.training import _resolve_completion_only_collator
