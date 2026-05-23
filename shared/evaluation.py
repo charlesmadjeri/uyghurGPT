@@ -12,7 +12,13 @@ from datasets import load_dataset
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
 
-from shared.models import bnb_config, dtype_kwarg, load_tokenizer, model_id
+from shared.models import (
+    align_special_tokens,
+    bnb_config,
+    dtype_kwarg,
+    load_tokenizer,
+    model_id,
+)
 from utils.io import checkpoint_dir, write_eval_artifact, write_run_status
 
 FLORES_REPO = "openlanguagedata/flores_plus"
@@ -57,7 +63,9 @@ def load_eval_model(model_choice: str, adapter_path: Path | None = None):
         print(f"[eval] Loading adapter from {adapter_path}")
         base = PeftModel.from_pretrained(base, str(adapter_path))
     base.eval()
-    return base, load_tokenizer(model_choice)
+    tokenizer = load_tokenizer(model_choice)
+    align_special_tokens(base, tokenizer)
+    return base, tokenizer
 
 
 @torch.inference_mode()
