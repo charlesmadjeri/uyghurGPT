@@ -14,11 +14,18 @@ def test_experiment1_defaults_are_production():
     assert cfg.model == "qwen"
     assert cfg.mix == 20
     assert cfg.epochs >= 1
-    assert cfg.sample_count is None, "smoke-only sample_count must not be the default"
+    # sample_count may be capped (default 100k since we can't fit the full
+    # 934k-pair corpus in the 5-day Slurm walltime even with packing+FA2),
+    # but it must never be a smoke-test value that would silently nerf a
+    # real training run.
+    assert cfg.sample_count is None or cfg.sample_count >= 10_000, (
+        "sample_count default is a smoke-test value"
+    )
     assert cfg.lora_rank > 0 and cfg.lora_alpha > 0
     assert 0.0 < cfg.test_split_pct < 0.5, "test_split_pct must be in (0, 0.5)"
     assert cfg.eval_steps > 0
     assert cfg.early_stopping_patience >= 0
+    assert cfg.enable_packing is True, "throughput knob regressed"
 
 
 def test_experiment1_to_dict_is_json_safe():
