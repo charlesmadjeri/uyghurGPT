@@ -98,9 +98,12 @@ def main():
     install_parts = []
     if args.install_deps:
         install_parts.append(
+            "python3 -m pip install --user -q --upgrade pip && "
             "python3 -m pip install --user -q "
             "'transformers>=4.44' 'peft>=0.12' 'trl>=0.10' 'accelerate>=0.34' "
-            "'bitsandbytes>=0.43' 'datasets>=2.20' sacrebleu sentencepiece"
+            "'bitsandbytes>=0.43' 'datasets>=2.20' 'huggingface_hub>=0.24' "
+            "sacrebleu sentencepiece jinja2 && "
+            "python3 -m pip install --user -q --index-url https://download.pytorch.org/whl/cu121 torch"
         )
     install_cmd = " && ".join(install_parts)
     if install_cmd:
