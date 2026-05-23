@@ -53,8 +53,9 @@ def info(s): return f"{B}{s}{RESET}"
 def warn(s): return f"{Y}{BOLD}⚠ {s}{RESET}"
 def err(s):  return f"{R}{BOLD}✘ {s}{RESET}"
 
+REMOTE_PYTHON = "$HOME/micromamba/envs/uyghur_env/bin/python"
 
-VALID_CHECKS = {1, 2, 3, 4, 5}
+VALID_CHECKS = {1, 2, 3, 4, 5, 6}
 
 
 def main():
@@ -112,7 +113,7 @@ def main():
         ids = sorted({int(x.strip()) for x in args.check.split(",") if x.strip()})
         for c in ids:
             if c not in VALID_CHECKS:
-                print(err(f"Unknown check id: {c} (valid: 1-5)")); sys.exit(2)
+                print(err(f"Unknown check id: {c} (valid: 1-6)")); sys.exit(2)
         check_arg = ",".join(str(c) for c in ids)
 
     # sbatch wrap, executed on the compute node:
@@ -146,11 +147,10 @@ def main():
         f"set -a && source .env && set +a && "
         f"export HF_HOME=\\$HOME/uyghurGPT/hf_cache && "
         f"export HUGGING_FACE_HUB_TOKEN=\\$HF_TOKEN && "
-        f"export PATH=\\$HOME/.local/bin:\\$PATH && "
         f"export CUDA_VISIBLE_DEVICES=0 && "
         f"export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && "
         f"echo HF_TOKEN_set=\\$([ -n \\\"\\$HF_TOKEN\\\" ] && echo yes || echo no) && "
-        f"python3 main.py --mode preflight --check {check_arg}\""
+        f"{REMOTE_PYTHON} main.py --mode preflight --check {check_arg}\""
     )
     print(info(f"Submitting preflight job (checks={check_arg}) ..."))
     proc = subprocess.run(["ssh", args.server, sbatch_inline], capture_output=True, text=True)

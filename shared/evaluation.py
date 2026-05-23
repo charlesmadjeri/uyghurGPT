@@ -15,13 +15,16 @@ from transformers import AutoModelForCausalLM
 from shared.models import bnb_config, load_tokenizer, model_id
 from utils.io import checkpoint_dir, write_eval_artifact, write_run_status
 
-FLORES_REPO = "facebook/flores"
+FLORES_REPO = "openlanguagedata/flores_plus"
 FLORES_SPLIT = "devtest"
+FLORES_EN_CODE = "eng_Latn"
+FLORES_UG_CODE = "uig_Arab"
 C4_REPO = "allenai/c4"
 C4_CONFIG = "en"
 
 WCM_CANDIDATES = [
     os.environ.get("WCM_V2_DATASET", "").strip(),
+    "hfl/wcm-v2",
     "CMLI-NLP/WCM-v2",
     "wcm-v2",
 ]
@@ -96,10 +99,22 @@ def _corpus_scores(hypotheses: list[str], references: list[str]) -> dict:
 
 
 def load_flores_pairs(max_samples: int | None = None) -> tuple[list[str], list[str]]:
-    ds = load_dataset(FLORES_REPO, "all", split=FLORES_SPLIT, trust_remote_code=True)
-    en_col, ug_col = "sentence_eng_Latn", "sentence_uig_Arab"
-    en = [row[en_col] for row in ds]
-    ug = [row[ug_col] for row in ds]
+    """FLORES+ devtest (the public test set, 1012 sentences), id-aligned EN↔UG.
+
+    Uses openlanguagedata/flores_plus per-language configs and joins on `id`,
+    so no dataset script is required (datasets >= 2.20 refuses scripts) and
+    the same source/splits are used by the preflight check 5 sanity test.
+    """
+    token = os.environ.get("HF_TOKEN")
+    ds_en = load_dataset(FLORES_REPO, FLORES_EN_CODE, split=FLORES_SPLIT, token=token)
+    ds_ug = load_dataset(FLORES_REPO, FLORES_UG_CODE, split=FLORES_SPLIT, token=token)
+    ug_by_id = {str(row["id"]): row["text"].strip() for row in ds_ug}
+    en, ug = [], []
+    for row in ds_en:
+        rid = str(row["id"])
+        if rid in ug_by_id:
+            en.append(row["text"].strip())
+            ug.append(ug_by_id[rid])
     if max_samples is not None:
         en, ug = en[:max_samples], ug[:max_samples]
     return en, ug

@@ -20,6 +20,9 @@ def info(s): return f"{B}{s}{RESET}"
 def warn(s): return f"{Y}{BOLD}⚠ {s}{RESET}"
 def err(s):  return f"{R}{BOLD}✘ {s}{RESET}"
 
+# Cluster: ~/.local is root-owned (pip --user fails). Use micromamba env instead.
+REMOTE_PYTHON = "$HOME/micromamba/envs/uyghur_env/bin/python"
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -40,13 +43,17 @@ def main():
     parser.add_argument(
         "--install-deps",
         action="store_true",
-        help="Install HuggingFace fine-tuning stack (transformers, peft, trl, accelerate, "
-             "bitsandbytes, datasets, sacrebleu) at job start",
+        help="Re-install deps into ~/micromamba/envs/uyghur_env at job start (normally one-time setup)",
     )
     parser.add_argument(
         "--new-run",
         action="store_true",
-        help="Force creation of a new run instead of auto-resuming latest incomplete run",
+        help="Create a new run id (timestamp) and pass it to main.py",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Reuse an existing run directory (e.g. 20260523_182843 after preprocess)",
     )
     parser.add_argument(
         "--experiment",
@@ -70,7 +77,13 @@ def main():
 
     local_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     remote_dir = "~/uyghurGPT"
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S") if args.new_run else None
+    if args.new_run and args.run_id:
+        print(err("Use either --new-run or --run-id, not both."))
+        sys.exit(2)
+    if args.new_run:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    else:
+        run_id = args.run_id
 
     exclude = [
         "--exclude=results/",
@@ -96,14 +109,13 @@ def main():
 
     print(info("Submitting job..."))
     install_parts = []
+    py = REMOTE_PYTHON
     if args.install_deps:
         install_parts.append(
-            "python3 -m pip install --user -q --upgrade pip && "
-            "python3 -m pip install --user -q "
-            "'transformers>=4.44' 'peft>=0.12' 'trl>=0.10' 'accelerate>=0.34' "
-            "'bitsandbytes>=0.43' 'datasets>=2.20' 'huggingface_hub>=0.24' "
-            "sacrebleu sentencepiece jinja2 && "
-            "python3 -m pip install --user -q --index-url https://download.pytorch.org/whl/cu121 torch"
+            f"{py} -m pip install -q -r requirements.txt jinja2 huggingface_hub && "
+            f"{py} -m pip install -q --index-url https://download.pytorch.org/whl/cu121 torch && "
+            # torch pulls fsspec>2026.2; datasets 4.x requires fsspec[http]<=2026.2.0
+            f"{py} -m pip install -q 'fsspec[http]>=2023.1.0,<=2026.2.0'"
         )
     install_cmd = " && ".join(install_parts)
     if install_cmd:
@@ -112,15 +124,22 @@ def main():
     sample_arg = f"--sample-count {args.sample_count} " if args.sample_count else ""
     job_tag = run_id if run_id is not None else "resume"
     slurm_run_label = run_id if run_id is not None else "resume"
+    # Double-quoted --wrap (same as run_preflight.py): single-quoted wrap leaves
+    # $HOME literal and the job dies on "cd $HOME/uyghurGPT: No such file".
     sbatch_inline = (
         f"cd {remote_dir} && mkdir -p results && sbatch "
         f"--job-name=uyghur_{args.model}_{job_tag} "
         f"--time={args.time} --ntasks=1 --cpus-per-task={args.cpus} "
         f"--gres=gpu:{args.gpus} --partition={args.partition} --requeue "
         f"--output=results/slurm_{slurm_run_label}_%j.out "
-        f"--wrap='{install_cmd}python3 main.py --experiment {args.experiment} "
+        f"--wrap=\"cd \\$HOME/uyghurGPT && set -a && source .env && set +a && "
+        f"export HF_HOME=\\$HOME/uyghurGPT/hf_cache && "
+        f"export HUGGING_FACE_HUB_TOKEN=\\$HF_TOKEN && "
+        f"export CUDA_VISIBLE_DEVICES=0 && "
+        f"export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && "
+        f"{install_cmd}{REMOTE_PYTHON} main.py --experiment {args.experiment} "
         f"--mode {args.mode} {run_arg}{sample_arg}"
-        f"--model {args.model} --mix {args.mix} --epochs {args.epochs}'"
+        f"--model {args.model} --mix {args.mix} --epochs {args.epochs}\""
     )
     result = subprocess.run(["ssh", args.server, sbatch_inline], capture_output=True, text=True)
     if result.returncode != 0:
