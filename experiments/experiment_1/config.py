@@ -24,7 +24,11 @@ class Experiment1Config:
     lora_rank: int = 16
     lora_alpha: int = 32
     per_device_train_batch_size: int = 4
-    per_device_eval_batch_size: int = 8
+    # Eval batch must stay <= train: eval is unpacked and we don't slice
+    # logits ([bs, 512, vocab=152064] -> ~1.2 GB at bs=8). Keeping it at
+    # bs=1 plus prediction_loss_only=True fits in 24 GB VRAM alongside the
+    # 7B QLoRA backbone.
+    per_device_eval_batch_size: int = 1
     gradient_accumulation_steps: int = 4
     max_seq_length: int = 512
     learning_rate: float = 2e-4

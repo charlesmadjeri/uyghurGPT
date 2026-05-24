@@ -480,6 +480,11 @@ def train(cfg, run_root: Path):
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
+            # Logits at eval are [bs, seq_len, vocab=152064]; gathering them
+            # OOMs 24 GB VRAM. We only consume eval_loss (early stopping +
+            # best ckpt), so skip the logits roundtrip entirely.
+            prediction_loss_only=True,
+            eval_accumulation_steps=1,
         )
     else:
         sft_kwargs["save_strategy"] = "epoch"
