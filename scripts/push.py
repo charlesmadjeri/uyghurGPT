@@ -34,8 +34,14 @@ def main():
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument(
         "--time",
-        default="5-00:00:00",
-        help="Slurm walltime (priority partition cap = 5 days = 5-00:00:00). Default: 5 days.",
+        default=None,
+        help=(
+            "Slurm walltime. If unset, defaults are derived from the "
+            "observed wall time of run_20260524_020432 (+50%% margin): "
+            "experiment 0 = 6:00:00 (~3h36m observed), experiment 1 = "
+            "1-00:00:00 (~15h52m observed). Priority partition cap is "
+            "5-00:00:00; raise only if you have evidence the run will exceed."
+        ),
     )
     parser.add_argument("--cpus", type=int, default=8)
     parser.add_argument("--gpus", type=int, default=1)
@@ -88,6 +94,16 @@ def main():
         help="Subsample CUTE-P / eval for smoke tests (passed to main.py)",
     )
     args = parser.parse_args()
+
+    # Wall-time default depends on the experiment (observed time × 1.5).
+    # See docs/PROJECT_RESULTS.md for the source measurements.
+    if args.time is None:
+        default_time_by_experiment = {
+            0: "6:00:00",
+            1: "1-00:00:00",
+        }
+        args.time = default_time_by_experiment.get(args.experiment, "1-00:00:00")
+        print(info(f"--time not set; using default {args.time} for experiment {args.experiment}"))
 
     local_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     remote_dir = "~/uyghurGPT"
