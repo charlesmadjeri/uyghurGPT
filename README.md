@@ -56,7 +56,7 @@ uyghurGPT/
   earlier `1g.10gb` ~10 GB profile). Training defaults to **QLoRA** (4-bit
   NF4 base + bf16 LoRA adapters + gradient checkpointing), peak ~8–12 GB.
   **bf16 LoRA also fits** on the 24 GB slice (~18–22 GB) via `--bf16-lora`
-  for ~2× speed. Slurm jobs default to `--time=5-00:00:00` (the full
+  for ~2× speed. Slurm walltime defaults depend on the experiment (`scripts/push.py` picks `6:00:00` for experiment 0 and `1-00:00:00` for experiment 1, observed wall + 50% margin from `docs/PROJECT_RESULTS.md`); override with `--time` if needed, capped at the partition cap
   `priority` partition cap). See `docs/PROJECT.md` §Compute environment.
 - HuggingFace stack (`transformers`, `peft`, `trl`, `accelerate`,
   `bitsandbytes`, `datasets`) — see `requirements.txt`
@@ -179,7 +179,7 @@ One-time zero-shot baselines (experiment 0; use a dedicated `--new-run` id):
 
 ```bash
 python3 scripts/push.py --server ju-compute-server \
-  --experiment 0 --mode eval --new-run --time 8:00:00
+  --experiment 0 --mode eval --new-run     # --time defaults to 6:00:00
 ```
 
 Resume a specific failed run (must reuse the run id whose
@@ -193,7 +193,7 @@ Re-run external benchmarks for a fine-tuned adapter only (skips zero-shot):
 
 ```bash
 python3 scripts/push.py --server ju-compute-server \
-  --experiment 1 --mode eval --run-id 20260524_020432 --time 4:00:00
+  --experiment 1 --mode eval --run-id 20260524_020432 --time 6:00:00  # eval-only is finetuned-only (~5h24m observed)
 ```
 
 Bootstrap missing Python packages on the server before training (the full
@@ -203,8 +203,11 @@ HuggingFace fine-tuning stack):
 python3 scripts/push.py --server ju-compute-server --new-run --install-deps
 ```
 
-Useful flags (defaults shown): `--mode all`, `--experiment 1`, `--time
-5-00:00:00`, `--cpus 8`, `--gpus 1`, `--mem 24G`, `--partition priority`.
+Useful flags (defaults shown): `--mode all`, `--experiment 1`, `--time`
+auto-picked from experiment (`6:00:00` for `--experiment 0`, `1-00:00:00`
+for `--experiment 1`; both = observed wall × 1.5, see
+[`docs/PROJECT_RESULTS.md`](docs/PROJECT_RESULTS.md)), `--cpus 8`,
+`--gpus 1`, `--mem 24G`, `--partition priority`.
 See [`docs/SERVER_CONFIG.md`](docs/SERVER_CONFIG.md) §4.0.1 for the 24 GB
 VRAM/RAM budget and tuning levers.
 

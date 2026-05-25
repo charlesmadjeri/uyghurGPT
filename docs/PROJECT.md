@@ -252,12 +252,12 @@ Cluster: **`slurm.hj.se`** (Jönköping University), accessed via SSH alias `ju-
 | Partition `scavenger` | Unlimited time, preemptible |
 | Account / QoS | `tmls22` / `normal` |
 | Concurrency | Up to 7 parallel single-GPU jobs |
-| `scripts/push.py` default `--time` | `5-00:00:00` (5 days — the full `priority` partition cap) |
+| `scripts/push.py` default `--time` | Experiment-aware (observed wall × 1.5, from `docs/PROJECT_RESULTS.md`): **experiment 0** = `6:00:00` (~3h36m observed), **experiment 1** = `1-00:00:00` (~15h52m observed). User-supplied `--time` always wins. Partition cap is still 5 days. |
 
 **MIG implications (24 GB slice):**
 - **QLoRA stays the default** (4-bit NF4 base + bf16 adapters + gradient checkpointing) — peak VRAM ~8–12 GB, leaves comfortable headroom.
 - **bf16 LoRA on a 7–8B model now fits** (bf16 7B ≈ 14 GB + bf16 adapters + activations ≈ 18–22 GB). Enable via `--bf16-lora` for ~2× faster training; same code path.
-- A single `--partition priority` job at the push.py default (5 days, the partition cap) should cover `preprocess + train + eval` for one Qwen QLoRA Mix-20 fine-tune on full CUTE-P. **Wall-clock is dominated by training**, not preprocess: streaming preprocess is tens of minutes; **tokenizing ~1.8M train rows** can take several hours; **3 epochs over ~1.8M examples** is typically **1–3+ days** on a 24 GB MIG slice (not the old 6–10 h smoke estimate). Budget ~1 h for external `--mode eval`. The 5-day cap absorbs tokenization + multi-day training + eval.
+- For `--sample-count 100_000` (default) Qwen QLoRA Mix-20, `run_20260524_020432` measured **~15h52m** for preprocess + train (early-stopped at step 1550/3138) + `qwen_finetuned` eval. The push.py default of `--time 1-00:00:00` for experiment 1 keeps a ~50% safety margin on top of that. Override `--time` if training fails to early-stop or you raise `--sample-count` toward the full ~934k-pair corpus (tokenizing the full corpus alone can take hours and 3 epochs unbounded is 1–3+ days). External `--mode eval` (`qwen_finetuned` only) was ~5h24m on the same hardware.
 - Full ablation (Mix-{0,10,20,50} × {Qwen, LLaMA} = 8 jobs) can run in parallel across 7 workers (one queued) if stretch goals are reached.
 - **For each new job:** read `nvidia-smi -L` at startup. Expected: ~24 GB visible. If the slice profile changes, update batch size / sequence length before proceeding.
 

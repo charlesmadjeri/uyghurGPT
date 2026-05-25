@@ -183,7 +183,7 @@ The CLI flag `--slice-size {10g, 20g}` selects between the two configs; the rest
 
 ### 3.D — Slurm Submission (both plans)
 
-`--partition priority`, `--gres=gpu:1`, `--time=5-00:00:00`, `--cpus-per-task=8` (push default), `--mem=24G` (matches 24 GB VRAM; see `SERVER_CONFIG.md` §4.0.1). Job submission via `scripts/run_preflight.py` (preflight) and `scripts/push.py` (preprocess / train / eval). The wrap sources `.env` so `HF_TOKEN` reaches the compute node; `python -u` + `PYTHONUNBUFFERED=1` for live Slurm logs.
+`--partition priority`, `--gres=gpu:1`, `--cpus-per-task=8` (push default), `--mem=24G` (matches 24 GB VRAM; see `SERVER_CONFIG.md` §4.0.1). Slurm `--time` defaults are experiment-aware in `scripts/push.py`: `6:00:00` for experiment 0 and `1-00:00:00` for experiment 1 — both = observed `run_20260524_020432` wall × 1.5 (see `docs/PROJECT_RESULTS.md`). Job submission via `scripts/run_preflight.py` (preflight) and `scripts/push.py` (preprocess / train / eval). The wrap sources `.env` so `HF_TOKEN` reaches the compute node; `python -u` + `PYTHONUNBUFFERED=1` for live Slurm logs.
 
 ---
 

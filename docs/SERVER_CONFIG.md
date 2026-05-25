@@ -470,7 +470,7 @@ zero-shot model).
 
 ```bash
 python3 scripts/push.py --server ju-compute-server \
-  --experiment 0 --mode eval --new-run --time 8:00:00
+  --experiment 0 --mode eval --new-run      # --time auto-picks 6:00:00 (observed ~3h36m × 1.5)
 ```
 
 Artifacts: `results/run_<id>/experiment_0/artifacts/eval_*.json`.
@@ -480,6 +480,9 @@ Artifacts: `results/run_<id>/experiment_0/artifacts/eval_*.json`.
 
 Experiment 1 **`--mode all`** runs preprocess + train + eval. The eval
 stage scores **`qwen_finetuned` only**; use experiment 0 for baselines.
+`scripts/push.py` defaults `--time` to **`1-00:00:00`** for experiment 1
+(observed ~15h52m on `run_20260524_020432` × 1.5 — see
+[`docs/PROJECT_RESULTS.md`](PROJECT_RESULTS.md)).
 
 ```bash
 # smoke (~20 min)
@@ -487,7 +490,7 @@ python3 scripts/push.py --server ju-compute-server \
   --experiment 1 --mode all --model qwen --mix 20 \
   --epochs 1 --sample-count 64 --new-run --time 1:00:00
 
-# full (5-day walltime default)
+# full (experiment-aware default = 1-00:00:00)
 python3 scripts/push.py --server ju-compute-server \
   --experiment 1 --mode all --model qwen --mix 20 \
   --epochs 3 --new-run
@@ -519,7 +522,7 @@ python3 scripts/push.py --server ju-compute-server \
   --experiment 1 --mode eval \
   --model qwen --mix 20 \
   --run-id 20260523_182843 \
-  --time 4:00:00
+  --time 6:00:00      # finetuned eval ~5h24m observed × 1.1 buffer
 ```
 
 Merge reported numbers with experiment 0 zero-shot artifacts from §4.1
