@@ -8,7 +8,8 @@ from pathlib import Path
 
 import sacrebleu
 import torch
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
+from huggingface_hub import hf_hub_download
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
 
@@ -28,9 +29,11 @@ FLORES_UG_CODE = "uig_Arab"
 C4_REPO = "allenai/c4"
 C4_CONFIG = "en"
 
+WCM_REPO_DEFAULT = "hfl/wcm-v2"
+WCM_UG_FILE = os.environ.get("WCM_V2_UG_FILE", "minority/ug.txt").strip() or "minority/ug.txt"
 WCM_CANDIDATES = [
     os.environ.get("WCM_V2_DATASET", "").strip(),
-    "hfl/wcm-v2",
+    WCM_REPO_DEFAULT,
     "CMLI-NLP/WCM-v2",
     "wcm-v2",
 ]
@@ -143,19 +146,44 @@ def eval_flores(model, tokenizer, max_samples: int | None = None) -> dict:
     }
 
 
+def _parse_wcm_tab_file(path: Path) -> Dataset:
+    rows: dict[str, list[str]] = {"text": [], "label": []}
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            if "\t" not in line:
+                raise ValueError(f"WCM line missing tab separator: {line[:80]!r}...")
+            text, label = line.rsplit("\t", 1)
+            rows["text"].append(text.strip())
+            rows["label"].append(label.strip())
+    if not rows["text"]:
+        raise ValueError(f"WCM file is empty: {path}")
+    return Dataset.from_dict(rows)
+
+
 def _load_wcm_dataset(max_samples: int | None):
-    last_err = None
-    for repo in WCM_CANDIDATES:
-        if not repo:
-            continue
+    """Uyghur WCM-v2 eval uses minority/ug.txt (text\\tlabel), not HF test split."""
+    last_err: Exception | None = None
+    repos = [r for r in WCM_CANDIDATES if r]
+    if not repos:
+        repos = [WCM_REPO_DEFAULT]
+    for repo in repos:
         try:
-            ds = load_dataset(repo, split="test", trust_remote_code=True)
+            path = hf_hub_download(
+                repo,
+                WCM_UG_FILE,
+                repo_type="dataset",
+                token=os.environ.get("HF_TOKEN"),
+            )
+            ds = _parse_wcm_tab_file(Path(path))
             if max_samples is not None:
                 ds = ds.select(range(min(max_samples, len(ds))))
-            return ds, repo
+            return ds, f"{repo}:{WCM_UG_FILE}"
         except Exception as e:
             last_err = e
-    raise RuntimeError(f"Could not load WCM-v2 from {WCM_CANDIDATES}: {last_err}")
+    raise RuntimeError(f"Could not load WCM-v2 Uyghur split from {repos}: {last_err}")
 
 
 def _wcm_columns(ds) -> tuple[str, str]:
