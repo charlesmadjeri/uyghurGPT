@@ -28,6 +28,16 @@ def test_experiment1_defaults_are_production():
     assert cfg.eval_steps > 0
     assert cfg.early_stopping_patience >= 0
     assert cfg.enable_packing is True, "throughput knob regressed"
+    assert cfg.eval_variants == ("qwen_finetuned",)
+
+
+def test_experiment0_defaults_are_zeroshot_only():
+    from experiments.experiment_0.config import Experiment0Config
+
+    cfg = Experiment0Config()
+    assert cfg.experiment_id == 0
+    assert cfg.eval_variants == ("qwen_zeroshot", "llama_zeroshot")
+    assert cfg.epochs == 0
 
 
 def test_experiment1_to_dict_is_json_safe():
