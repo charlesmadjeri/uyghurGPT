@@ -162,8 +162,6 @@ python3 main.py --experiment 0 --mode eval --run-id zeroshot_baselines
 
 End-to-end cluster bootstrap (Python env, `HF_TOKEN`, gated repos,
 TRL/tensorboard quirks): see [`docs/SERVER_CONFIG.md`](docs/SERVER_CONFIG.md).
-SSH alias used throughout the scripts and docs: `ju-compute-server`
-(`mach25ku@jth-ai-06.hj.se:50001` in `~/.ssh/config`).
 
 ```bash
 python3 scripts/push.py --server ju-compute-server --model qwen --epochs 3
