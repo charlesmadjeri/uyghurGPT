@@ -59,7 +59,7 @@ At **train time**, `shared/training.py` templates `messages` → `text` and appl
 | -------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------ |
 | `train`  | ~95 % of CUTE-P pairs (pair-level) + matching FLAN rows             | Gradient updates                                                               | `shared/training.py`                 |
 | `test`   | ~5 % held-out CUTE-P pairs + matching FLAN rows (configurable `test_split_pct`) | In-loop `eval_loss` every `eval_steps` → **overfit detector** in TensorBoard; also drives `EarlyStoppingCallback` and `load_best_model_at_end` | `shared/training.py`, `experiments/experiment_1/config.py` |
-| `eval`   | **External, never seen**: FLORES-200 devtest (`eng_Latn` ↔ `uig_Arab`), WCM-v2 Uyghur classification, C4 EN held-out PPL | Final reported numbers (`--mode eval`)                                         | `shared/evaluation.py`               |
+| `eval`   | **External, never seen**: FLORES-200 devtest (`eng_Latn` ↔ `uig_Arab`), WCM-v2 Uyghur (`hfl/wcm-v2` → `minority/ug.txt`), C4 EN held-out PPL | Final reported numbers: **`--experiment 0`** = zero-shot Qwen + Llama; **`--experiment 1`** = fine-tuned Qwen only (`eval_variants` in config) | `shared/evaluation.py`, `experiments/experiment_{0,1}/` |
 
 The CUTE-P FLAN mix ratio (Mix-{0,10,20,50}) is computed against the **training pair count**, so the effective ratio is preserved after holding out the test pairs. Mix-20 means 80 % CUTE-P / 20 % FLAN among the rows the model trains on. See `PROJECT_REFINEMENT.md` §9 for why we moved away from the original `dataset/cute_p_valdev.jsonl` plan.
 

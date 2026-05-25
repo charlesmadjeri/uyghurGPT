@@ -25,7 +25,8 @@ to this scope.
 uyghurGPT/
 ├── main.py                  # CLI entrypoint (preflight + experiment dispatch)
 ├── experiments/             # per-experiment pipelines
-│   └── experiment_1/        # core Qwen Mix-20 QLoRA (config + run)
+│   ├── experiment_0/        # zero-shot baselines (eval only; run once)
+│   └── experiment_1/        # core Qwen Mix-20 QLoRA (preprocess / train / eval)
 ├── shared/                  # cross-experiment modules
 │   ├── preflight.py         # Day-1 sanity checks
 │   ├── data.py              # CUTE-P + FLAN loading and instruction formatting
@@ -85,7 +86,7 @@ python3 -m pip install -r requirements.txt
 | Invocation | What it does |
 |------------|--------------|
 | `--mode preflight` | Day-1 sanity checks (tokenizer, QLoRA VRAM, CUTE-P sample, CUTE-Llama-P load) — writes `results/preflight/` |
-| `--experiment N --mode {preprocess,train,eval,all}` | Run a stage (or all stages) of experiment `N`. Currently `N=1` is the core Qwen Mix-20 QLoRA pipeline. |
+| `--experiment N --mode {preprocess,train,eval,all}` | Run a stage of experiment `N`. **`0`** = zero-shot Qwen + Llama on FLORES/WCM/C4 (eval only). **`1`** = preprocess + train + eval fine-tuned Qwen Mix-20 (external eval runs **`qwen_finetuned` only**). |
 
 Stage semantics for an experiment:
 
@@ -111,10 +112,14 @@ Stage semantics for an experiment:
   and `load_best_model_at_end=True`. The saved `final/` adapter is the
   lowest-`eval_loss` checkpoint, not the last.
 - **`eval`** — external, never-seen benchmarks: FLORES+ EN↔UG (chrF, BLEU,
-  via `openlanguagedata/flores_plus` devtest), WCM-v2 accuracy, C4
-  perplexity (catastrophic forgetting). Evaluates zero-shot Qwen,
-  zero-shot LLaMA, and the fine-tuned Qwen adapter; results to
-  `artifacts/eval_*.json`.
+  via `openlanguagedata/flores_plus` devtest), WCM-v2 Uyghur classification
+  (`hfl/wcm-v2` → `minority/ug.txt`), C4 perplexity (catastrophic forgetting).
+  Results land in `artifacts/eval_*.json`. **Which models run depends on the
+  experiment id:**
+  - **`--experiment 0`**: `qwen_zeroshot` + `llama_zeroshot` (no training;
+    run once per cluster — numbers do not change between fine-tunes).
+  - **`--experiment 1`**: `qwen_finetuned` only (adapter from this run's
+    `checkpoints/`). Compare against experiment 0 artifacts for baselines.
 - **`all`** — runs the three above sequentially in the same run directory.
 
 ## Day-1 preflight
@@ -147,6 +152,12 @@ python3 main.py --experiment 1 --mode train      --run-id myrun
 python3 main.py --experiment 1 --mode eval       --run-id myrun
 ```
 
+Zero-shot baselines (separate run directory; no preprocess/train):
+
+```bash
+python3 main.py --experiment 0 --mode eval --run-id zeroshot_baselines
+```
+
 ## Run on compute server
 
 End-to-end cluster bootstrap (Python env, `HF_TOKEN`, gated repos,
@@ -164,11 +175,25 @@ Force a new run instead of resuming the latest incomplete one:
 python3 scripts/push.py --server ju-compute-server --model qwen --epochs 3 --new-run
 ```
 
+One-time zero-shot baselines (experiment 0; use a dedicated `--new-run` id):
+
+```bash
+python3 scripts/push.py --server ju-compute-server \
+  --experiment 0 --mode eval --new-run --time 8:00:00
+```
+
 Resume a specific failed run (must reuse the run id whose
 `preprocessed_dataset/` lives on the server):
 
 ```bash
 python3 scripts/push.py --server ju-compute-server --mode train --run-id 20260523_182843
+```
+
+Re-run external benchmarks for a fine-tuned adapter only (skips zero-shot):
+
+```bash
+python3 scripts/push.py --server ju-compute-server \
+  --experiment 1 --mode eval --run-id 20260524_020432 --time 4:00:00
 ```
 
 Bootstrap missing Python packages on the server before training (the full
@@ -217,12 +242,15 @@ stops closing.
 
 ## Per-run artifacts
 
-Each run writes to `results/run_<run_id>/experiment_<N>/`:
+Each run writes to `results/run_<run_id>/experiment_<N>/` (`N=0` for
+zero-shot baselines, `N=1` for the Mix-20 fine-tune). There is no single
+combined `eval_summary.json` across experiments — merge experiment 0 and
+experiment 1 artifacts when reporting.
 
 - `artifacts/run_config.json` — frozen hyperparameters (includes `flan_seed`, `test_split_pct`, `eval_steps`, `early_stopping_patience`); the split is a deterministic function of these
 - `artifacts/run_status.json` — current pipeline stage and timestamp
-- `artifacts/preprocessed_dataset/` — HF `DatasetDict` with `train` + `test` splits (see [Splits](#train--test--eval-split))
-- `artifacts/eval_<benchmark>.json` — one file per external benchmark and variant
+- `artifacts/preprocessed_dataset/` — HF `DatasetDict` with `train` + `test` splits (experiment 1 only; see [Splits](#train--test--eval-split))
+- `artifacts/eval_<benchmark>_<variant>.json` — one file per external benchmark and variant (`eval_summary.json` aggregates variants in that experiment dir)
 - `checkpoints/<model_label>/` — LoRA adapters saved every `eval_steps`; `final/` is the best-`eval_loss` adapter
 - `logs/<model_label>/` and `checkpoints/<model_label>/runs/*` — TensorBoard event files
 
@@ -246,14 +274,14 @@ row-level split. The invariants are locked in by `tests/test_data_split.py`
 
 ## Evaluation
 
-External benchmarks (run by `--mode eval`; the in-loop `eval_loss`
-above is the overfit detector, not a reported number):
+External benchmarks (run by `--mode eval` on experiment 0 or 1; the
+in-loop `eval_loss` above is the overfit detector, not a reported number):
 
 | Benchmark | Direction / Task | Metric | Tool |
 |-----------|------------------|--------|------|
 | FLORES+ (devtest, [`openlanguagedata/flores_plus`](https://huggingface.co/datasets/openlanguagedata/flores_plus)) | EN→UG | chrF, BLEU | `sacrebleu` |
 | FLORES+ (devtest) | UG→EN | chrF, BLEU | `sacrebleu` |
-| WCM-v2 (Uyghur, `hfl/wcm-v2`) | classification | Accuracy | HF datasets |
+| WCM-v2 Uyghur (`hfl/wcm-v2` → `minority/ug.txt`, 300 rows, `text\tlabel`) | classification | Accuracy | `hf_hub_download` + `shared/evaluation.py` |
 | C4 (en, 1K samples) | held-out perplexity | PPL | `transformers` |
 | MiLiC-Eval (`pkupie/milic-eval`) | 9 tasks (stretch) | task-specific | HF datasets |
 

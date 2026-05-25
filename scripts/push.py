@@ -70,7 +70,10 @@ def main():
         "--experiment",
         type=int,
         default=1,
-        help="Experiment id passed to main.py (default: 1 = core Qwen Mix-20)",
+        help=(
+            "Experiment id for main.py (0 = zero-shot eval only; "
+            "1 = core Qwen Mix-20 preprocess/train/eval)"
+        ),
     )
     parser.add_argument(
         "--mode",

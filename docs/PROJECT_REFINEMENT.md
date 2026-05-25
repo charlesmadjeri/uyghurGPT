@@ -191,7 +191,7 @@ all optimistic assumptions for a first-time Slurm user on a shared cluster.
   |---------|--------------------------------------------------------------------------------------------|
   | `train` | gradient updates                                                                           |
   | `test`  | in-loop `eval_loss` curve in TensorBoard (overfit detector) + early stopping / best-checkpoint signal |
-  | `eval`  | external FLORES-200 devtest + WCM-v2 + C4 PPL (never seen during training, different domain) |
+  | `eval`  | external FLORES-200 devtest + WCM-v2 Uyghur (`minority/ug.txt`) + C4 PPL (never seen during training, different domain); experiment 0 = zero-shot baselines, experiment 1 = fine-tuned adapter only |
 
   The default `test_split_pct` is 5 %, controlled by
   `experiments/experiment_1/config.Experiment1Config`. FLAN rows get an
@@ -331,6 +331,7 @@ similar silent failure modes are identified.
 | 9 | Three-way pair-level split formalised in-pipeline | Methodological rigour | Removes leakage across `en2ug` / `ug2en`; replaces external `valdev.jsonl` file |
 | 10 | Seeded RNGs + early stopping + best-checkpoint + native assistant-only loss | Reproducibility + waste reduction | Final adapter = lowest `eval_loss` checkpoint, not the last; runs are deterministic from `run_config.json` |
 | 11 | Pytest contract suite for the data split | Regression prevention | Locks in the no-leakage invariant + guards against shipped smoke defaults |
+| 12 | Experiment 0 for zero-shot eval; experiment 1 eval = `qwen_finetuned` only | Compute / workflow | Zero-shot FLORES/WCM/C4 numbers are invariant across fine-tunes; re-running them on every experiment-1 eval wasted ~25 min per variant. WCM loader fixed to `minority/ug.txt` (HF `split=test` was Chinese-only, no labels). |
 
 ---
 

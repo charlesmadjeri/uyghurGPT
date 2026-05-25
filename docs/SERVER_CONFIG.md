@@ -39,7 +39,7 @@ touches — preflight check 6 will fail otherwise:
 |------|----------------|
 | <https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct> | Secondary base model + zero-shot baseline |
 | <https://huggingface.co/datasets/openlanguagedata/flores_plus> | FLORES-200 EN↔UG eval (devtest) |
-| <https://huggingface.co/datasets/hfl/wcm-v2> | Uyghur classification eval |
+| <https://huggingface.co/datasets/hfl/wcm-v2> | Uyghur classification eval (`minority/ug.txt`, not the HF `test` parquet) |
 | <https://huggingface.co/datasets/pkupie/milic-eval> | Stretch eval (optional) |
 
 Acceptance is instant for all of these.
@@ -335,6 +335,7 @@ debugging:
 | `c10 NVML_SUCCESS == r INTERNAL ASSERT FAILED` (torch on MIG) | Set `PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync` (already in the wraps). |
 | `Dataset scripts are no longer supported, but found flores.py` (check 5) | `datasets >= 2.20` refuses scripts. Switched to `openlanguagedata/flores_plus` per-language configs, joined by `id`. Same path used by `shared/evaluation.py`. |
 | Check 6 reports `GATED_NO_ACCESS` for `hfl/wcm-v2` or `flores_plus` | Re-accept terms on the HF website with the **same** account whose token is in `.env`. |
+| `[eval] WCM-v2 failed: Unrecognized WCM-v2 schema: ['text']` | Old code used `load_dataset(..., split="test")`, which is the Chinese split without labels. Current code loads `minority/ug.txt` (tab-separated `text` + `label`, 300 Uyghur rows). Sync latest `shared/evaluation.py` and re-run eval. Override path with `WCM_V2_UG_FILE` if needed. |
 
 ### Experiment 1 train — additional failures (after preflight)
 
@@ -460,7 +461,25 @@ back to the completion collator for assistant-only loss.
 Early stopping (`patience=3`, eval every 50 steps) typically cuts 30-60%
 off when `eval_loss` plateaus.
 
-### 4.1 Fresh run (preprocess + train + eval)
+### 4.1 Zero-shot baselines (experiment 0, run once)
+
+Zero-shot Qwen and Llama FLORES/WCM/C4 numbers do not depend on any
+fine-tune. Run them once and keep the artifacts; later experiment-1 eval
+jobs skip those variants to save wall time (~2× FLORES generation per
+zero-shot model).
+
+```bash
+python3 scripts/push.py --server ju-compute-server \
+  --experiment 0 --mode eval --new-run --time 8:00:00
+```
+
+Artifacts: `results/run_<id>/experiment_0/artifacts/eval_*.json`.
+`preprocess` / `train` modes are coerced to `eval` for experiment 0.
+
+### 4.2 Fresh run (preprocess + train + eval)
+
+Experiment 1 **`--mode all`** runs preprocess + train + eval. The eval
+stage scores **`qwen_finetuned` only**; use experiment 0 for baselines.
 
 ```bash
 # smoke (~20 min)
@@ -477,7 +496,7 @@ python3 scripts/push.py --server ju-compute-server \
 Add `--install-deps` on first train after pulling code changes (installs
 `requirements.txt` + cu121 torch + fsspec pin inside the job wrap).
 
-### 4.2 Resume after preprocess succeeded but train failed
+### 4.3 Resume after preprocess succeeded but train failed
 
 The preprocessed HF dataset lives under
 `results/run_<id>/experiment_1/artifacts/preprocessed_dataset` **on the
@@ -493,7 +512,7 @@ python3 scripts/push.py --server ju-compute-server \
 Replace `20260523_182843` with your run's timestamp from
 `results/run_*/experiment_1/artifacts/run_config.json`.
 
-Then eval (after train completes):
+Then eval (after train completes; **fine-tuned Qwen only**):
 
 ```bash
 python3 scripts/push.py --server ju-compute-server \
@@ -503,7 +522,10 @@ python3 scripts/push.py --server ju-compute-server \
   --time 4:00:00
 ```
 
-### 4.3 Monitor
+Merge reported numbers with experiment 0 zero-shot artifacts from §4.1
+when writing up results.
+
+### 4.4 Monitor
 
 ```bash
 python3 scripts/check.py --server ju-compute-server
@@ -513,7 +535,7 @@ python3 scripts/check.py --server ju-compute-server --logs   # TB scalars only
 
 See the README §"Run on compute server" for more flags.
 
-### 4.4 Train / test / eval split
+### 4.5 Train / test / eval split
 
 The CUTE-P + FLAN mix is split at `--mode preprocess` time:
 
@@ -521,7 +543,7 @@ The CUTE-P + FLAN mix is split at `--mode preprocess` time:
 |-------|--------|----------|
 | `train` | 95% of CUTE-P+FLAN mix (configurable, `test_split_pct`) | gradient updates |
 | `test`  | 5% held-out from the same mix | in-loop `eval/loss` curve in TensorBoard — **the overfit detector** (compare against `train/loss`) |
-| `eval`  | external FLORES+ devtest, WCM-v2 test, C4 PPL | final benchmark numbers (`--mode eval`), data the model has never seen, different domain |
+| `eval`  | external FLORES+ devtest, WCM-v2 Uyghur (`minority/ug.txt`), C4 PPL | final benchmark numbers (`--experiment 0` or `1 --mode eval`), never seen during training |
 
 TensorBoard will show `train/loss` (every `logging_steps=10`) and
 `eval/loss` (every `eval_steps=50`). A widening gap = overfitting. The

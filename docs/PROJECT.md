@@ -84,7 +84,7 @@ All datasets and models used in this project are publicly accessible. Access not
 |----------|------|---------|---------|-------|
 | **CUTE-P** (EN + UG subset) | Fine-tuning corpus | [`CMLI-NLP/CUTE`](https://github.com/CMLI-NLP/CUTE) | Open | ~10.9 GB on disk; ~934K EN↔UG pairs |
 | **FLORES-200** (FLORES+) | Translation evaluation | HuggingFace [`openlanguagedata/flores_plus`](https://huggingface.co/datasets/openlanguagedata/flores_plus) (gated, instant) | Open | Successor to `facebook/flores` (whose dataset script was removed by `datasets>=2.20`); per-language configs `eng_Latn` + `uig_Arab` joined by `id`. ~1012 sentences/lang in `devtest`. |
-| **WCM-v2** | Uyghur classification eval | HuggingFace (gated) | Gated (instant) | Agree to share contact info — no approval wait |
+| **WCM-v2** | Uyghur classification eval (`hfl/wcm-v2` → `minority/ug.txt`, 300 rows) | HuggingFace (gated) | Gated (instant) | Agree to share contact info — no approval wait |
 | **MiLiC-Eval** | Multi-task bilingual eval *(stretch)* | HuggingFace (gated) | Gated (instant) | Same gating as WCM-v2; defer to final report |
 | **Qwen2.5-7B-Instruct** | Primary model | [`Qwen/Qwen2.5-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) | Apache 2.0 | ~15 GB (bf16); ~8 GB (4-bit NF4) |
 | **LLaMA-3.1-8B-Instruct** | Secondary model + zero-shot baseline | [`meta-llama/Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) | Gated (Meta license, instant) | ~16 GB (bf16); ~8 GB (4-bit NF4) |
@@ -229,8 +229,8 @@ on to the next harder block.
 
 | Week | Milestone | Type |
 |------|-----------|------|
-| 1 | Pre-flight checks (tokenizer, VRAM, CUTE-Llama-P load test, CUTE-P download); evaluation harness runs on **zero-shot Qwen2.5** and **zero-shot LLaMA-3.1** → first FLORES-200 + WCM-v2 numbers in the artifacts | **Core** |
-| 2 | QLoRA fine-tune Qwen2.5-7B Mix-20; evaluate on FLORES-200 + WCM-v2; perplexity check → fine-tuned vs zero-shot delta reported | **Core** |
+| 1 | Pre-flight checks (tokenizer, VRAM, CUTE-Llama-P load test, CUTE-P download); **`--experiment 0 --mode eval`** → zero-shot Qwen2.5 + LLaMA-3.1 on FLORES-200 + WCM-v2 + C4 (artifacts under `experiment_0/`) | **Core** |
+| 2 | QLoRA fine-tune Qwen2.5-7B Mix-20 (`--experiment 1`); **`--experiment 1 --mode eval`** on FLORES + WCM + C4 for **`qwen_finetuned` only**; compare deltas to experiment 0 baselines | **Core** |
 | 3 | Add **CUTE-Llama-P** to the eval (few-shot prompted) and complete the full baseline table; design presentation. Optionally start LLaMA-3.1-8B QLoRA Mix-20 | Core + Stretch |
 | 4 | Ablation Mix-{0,10,50} on Qwen2.5 (stretch); LLaMA-3.1 fine-tune finishes; MiLiC-Eval if time allows | Stretch |
 | 5 | Analysis, EN↔UG asymmetry discussion, write-up | **Core** |
@@ -265,7 +265,7 @@ Cluster: **`slurm.hj.se`** (Jönköping University), accessed via SSH alias `ju-
 
 ## Per-run Artifacts
 
-Each run writes to `results/run_<run_id>/experiment_<N>/`:
+Each run writes to `results/run_<run_id>/experiment_<N>/` (`N=0` zero-shot baselines, `N=1` fine-tune pipeline):
 - `artifacts/run_config.json` — frozen hyperparameters (includes `flan_seed`, `test_split_pct`, `eval_steps`, `early_stopping_patience`, …); split is a deterministic function of these
 - `artifacts/run_status.json` — current pipeline stage and timestamp
 - `artifacts/eval_<benchmark>.json` — one file per evaluation benchmark + variant (FLORES+ EN↔UG, WCM-v2, C4 PPL)
@@ -283,4 +283,4 @@ Preflight artifacts (run once per cluster, not per experiment) live under
 
 ---
 
-*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Core experiment: Qwen2.5-7B-Instruct QLoRA Mix-20 evaluated on FLORES-200 + WCM-v2. CUTE-Llama-P is back as a planned core baseline now that the 24 GB MIG slice and preflight check 5 confirm it loads and produces Uyghur output (few-shot prompted; protocol difference noted). EN↔UG asymmetry documented as expected outcome. MiLiC-Eval deferred to stretch. All stretch goals gated behind core completion. **Compute update:** MIG slice upgraded from `1g.10gb` (~10 GB) to ~24 GB — bf16 LoRA now feasible; QLoRA remains default; thresholds and headroom revised accordingly.*
+*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Experiment 0: zero-shot baselines (eval once). Experiment 1: Qwen2.5-7B-Instruct QLoRA Mix-20 on FLORES-200 + WCM-v2 (`minority/ug.txt`). CUTE-Llama-P is back as a planned core baseline now that the 24 GB MIG slice and preflight check 5 confirm it loads and produces Uyghur output (few-shot prompted; protocol difference noted). EN↔UG asymmetry documented as expected outcome. MiLiC-Eval deferred to stretch. All stretch goals gated behind core completion. **Compute update:** MIG slice upgraded from `1g.10gb` (~10 GB) to ~24 GB — bf16 LoRA now feasible; QLoRA remains default; thresholds and headroom revised accordingly.*
