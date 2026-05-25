@@ -288,18 +288,40 @@ def eval_english_perplexity(model, tokenizer, max_samples: int = 1000) -> dict:
     }
 
 
+ALL_EVAL_VARIANTS = ("qwen_zeroshot", "llama_zeroshot", "qwen_finetuned")
+
+
 def _variant_specs(cfg, run_root: Path) -> list[dict]:
-    specs = [
-        {"label": "qwen_zeroshot", "model": "qwen", "adapter": None},
-        {"label": "llama_zeroshot", "model": "llama", "adapter": None},
-    ]
-    adapter = _find_adapter_path(run_root, cfg.model_label)
-    if adapter:
-        specs.append(
-            {"label": "qwen_finetuned", "model": "qwen", "adapter": adapter}
-        )
+    """Build evaluation variant specs, optionally filtered by ``cfg.eval_variants``.
+
+    ``cfg.eval_variants`` is an iterable of labels from ``ALL_EVAL_VARIANTS``.
+    When unset (None) we keep the historical behaviour and run every variant
+    whose model/adapter is available.
+    """
+    requested = getattr(cfg, "eval_variants", None)
+    if requested is None:
+        wanted = set(ALL_EVAL_VARIANTS)
     else:
-        print("[eval] WARNING: no fine-tuned adapter found; skipping qwen_finetuned")
+        wanted = {v for v in requested}
+        unknown = wanted - set(ALL_EVAL_VARIANTS)
+        if unknown:
+            raise ValueError(
+                f"Unknown eval_variants {sorted(unknown)}; expected subset of {ALL_EVAL_VARIANTS}"
+            )
+
+    specs: list[dict] = []
+    if "qwen_zeroshot" in wanted:
+        specs.append({"label": "qwen_zeroshot", "model": "qwen", "adapter": None})
+    if "llama_zeroshot" in wanted:
+        specs.append({"label": "llama_zeroshot", "model": "llama", "adapter": None})
+    if "qwen_finetuned" in wanted:
+        adapter = _find_adapter_path(run_root, cfg.model_label)
+        if adapter:
+            specs.append(
+                {"label": "qwen_finetuned", "model": "qwen", "adapter": adapter}
+            )
+        else:
+            print("[eval] WARNING: no fine-tuned adapter found; skipping qwen_finetuned")
     return specs
 
 

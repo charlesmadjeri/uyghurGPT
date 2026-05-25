@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -50,6 +50,11 @@ class Experiment1Config:
     flores_max_samples: int | None = None
     wcm_max_samples: int | None = None
     ppl_max_samples: int = 1000
+
+    # Zero-shot Qwen/Llama numbers do not depend on this run's adapter and
+    # are computed once by experiment 0 (see experiments/experiment_0).
+    # Experiment 1 therefore only re-evaluates the fine-tuned variant.
+    eval_variants: tuple[str, ...] = field(default_factory=lambda: ("qwen_finetuned",))
 
     # Throughput knobs (see docs/SERVER_CONFIG.md §4.0.1).
     # Sequence packing concatenates short rows into 512-token chunks
