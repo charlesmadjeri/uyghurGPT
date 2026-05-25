@@ -2,12 +2,79 @@
 
 from __future__ import annotations
 
+import os
+
 from transformers import AutoTokenizer
 
 MODEL_IDS = {
     "qwen": "Qwen/Qwen2.5-7B-Instruct",
     "llama": "meta-llama/Llama-3.1-8B-Instruct",
 }
+
+# TRL packing / padding-free training requires a flash-attn backend so
+# flattened sequences do not cross-contaminate between packed samples.
+PACKING_SAFE_ATTN = frozenset({
+    "flash_attention_2",
+    "flash_attention_3",
+    "kernels-community/flash-attn2",
+    "kernels-community/flash-attn3",
+    "kernels-community/vllm-flash-attn3",
+})
+
+
+def attn_supports_packing(impl: str) -> bool:
+    return impl in PACKING_SAFE_ATTN
+
+
+def flash_attn_import_error() -> str | None:
+    """Return None if ``flash_attn`` imports; otherwise a short reason."""
+    try:
+        import flash_attn  # noqa: F401
+
+        return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def attn_implementation() -> str:
+    """Pick the best available attention backend.
+
+    Order: FlashAttention 2 (if installed) > SDPA (when CUDA is
+    available) > eager. Set ``UYGHURGPT_ATTN`` to force a backend.
+    """
+    override = os.environ.get("UYGHURGPT_ATTN")
+    if override:
+        return override
+    if flash_attn_import_error() is None:
+        return "flash_attention_2"
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "sdpa"
+    except Exception:
+        pass
+    return "eager"
+
+
+def dtype_kwarg(value) -> dict:
+    """Return the ``{'dtype': value}`` kwarg using the current transformers name.
+
+    transformers >= 4.56 renamed ``torch_dtype`` to ``dtype`` and emits a
+    DeprecationWarning on the old name. Older builds still expect
+    ``torch_dtype``. We pick the right key at import time so every
+    ``AutoModelForCausalLM.from_pretrained(..., **dtype_kwarg(...))`` call
+    is silent on both APIs.
+    """
+    import inspect
+
+    from transformers import AutoModelForCausalLM
+
+    try:
+        params = inspect.signature(AutoModelForCausalLM.from_pretrained).parameters
+        key = "dtype" if "dtype" in params else "torch_dtype"
+    except (TypeError, ValueError):
+        key = "torch_dtype"
+    return {key: value}
 
 
 def model_id(choice: str) -> str:
@@ -43,8 +110,38 @@ def bnb_config():
     )
 
 
-def load_tokenizer(model_choice: str):
+def load_tokenizer(model_choice: str, max_seq_length: int | None = None):
     tok = AutoTokenizer.from_pretrained(model_id(model_choice), use_fast=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    if max_seq_length is not None:
+        # Match SFTConfig max_seq_length so TRL tokenization truncates here
+        # instead of warning on the model default (131072 for Qwen).
+        tok.model_max_length = max_seq_length
     return tok
+
+
+_MISSING = object()
+
+
+def align_special_tokens(model, tokenizer) -> None:
+    """Sync model.config + generation_config with the tokenizer's special tokens.
+
+    Qwen2.5 ships ``pad_token=<|endoftext|>`` (id 151643) in the
+    tokenizer but leaves ``model.config.pad_token_id=None`` and
+    ``model.config.bos_token_id=None``. transformers >= 4.45 detects
+    the drift on first forward/save and prints an "aligned accordingly"
+    warning. Aligning explicitly here (including pushing ``None`` from the
+    tokenizer back onto the model where Qwen ships a stale ``bos_token_id``)
+    keeps the train log clean and the config persisted to checkpoints is
+    consistent with how we actually tokenized.
+    """
+    for attr in ("pad_token_id", "bos_token_id", "eos_token_id"):
+        tok_value = getattr(tokenizer, attr, _MISSING)
+        if tok_value is _MISSING:
+            continue
+        if getattr(model.config, attr, _MISSING) != tok_value:
+            setattr(model.config, attr, tok_value)
+        gen_cfg = getattr(model, "generation_config", None)
+        if gen_cfg is not None and getattr(gen_cfg, attr, _MISSING) != tok_value:
+            setattr(gen_cfg, attr, tok_value)

@@ -23,47 +23,45 @@ The selection between A and B is made at training-launch time via a single CLI f
 
 > **Known data quality caveat (from Day-1 spot-check).** The EN side of CUTE-P is **machine-translated from Chinese**, not native English. The first 100 lines we inspected read as fluent but artifact-laden technical/encyclopedic prose. This means our fine-tune is learning "EN-from-ZH ↔ UG" rather than "native-EN ↔ UG"; FLORES-200 EN↔UG numbers will be depressed relative to a hypothetical native-EN training set. We document this in the final report's limitations section and frame the project as "best-effort low-resource EN↔UG using the only available parallel data at this scale."
 
-**Preprocessing (`main.py --mode preprocess`).**
+**Preprocessing (`main.py --mode preprocess`) — implemented in `shared/data.py`.**
 
-1. Drop pairs where either side is empty after stripping whitespace.
-2. Drop pairs where either side exceeds **512 tokens under the chosen base model's tokenizer** (Qwen2.5-7B-Instruct). Day-1 tokenizer evidence: UG token/byte ratio = 0.396, EN = 0.202 — so a ≈ 600-character UG line ≈ 240 tokens. We expect < 5 % of pairs to exceed 512 tokens.
-3. Drop any UG line that fails the Arabic-script check (no Arabic characters present) — the Day-1 spot-check found 100 / 100 lines in Arabic script, so this filter is a defensive null-op.
-4. Shuffle with `seed=42`; write to `dataset/cute_p_clean.jsonl` (one JSON object per line: `{en, ug}`).
-5. Compute and freeze a 1 000-pair held-out **in-domain validation split** (`dataset/cute_p_valdev.jsonl`) sampled before shuffling — used only for periodic during-training loss checks. **Not used for final reporting.**
+1. **Load CUTE-P** from `~/uyghurGPT/dataset/{en,uy}.txt`. If missing, `hf_hub_download` fetches only `parallel-corpus/{en,uy}.txt` from `CMLI-NLP/CUTE-Datasets` (~10.9 GB, one-time, atomic write). Line counts cached in `<file>.lines`.
+2. **Pair-level train/test split** with `seed=42` *before* bidirectional expansion (`shared/data._split_pair_indices`; locked in by `tests/test_data_split.py`). A pair is held out as a whole — its EN→UG and UG→EN halves always land in the same split.
+3. **Stream** each split through `Dataset.from_generator` (`_stream_cute_rows`): one row dict at a time, Arrow writer flushes in 1k-row batches — preprocess peak RAM **< 1 GB** on the full ~934k-pair corpus (no giant Python `list[dict]`).
+4. **Expand** every kept pair into **both** directions (`en2ug` and `ug2en`) — not random direction sampling. Each row is conversational `{"messages": [...], "task": ...}`.
+5. **Blend FLAN** (`Muennighoff/flan`, reservoir capped by `flan_subset_size=50_000`), same `test_split_pct` holdout on FLAN rows, `concatenate_datasets` into train/test.
+6. **Shuffle** each split (`Dataset.shuffle`) and `save_to_disk` → `artifacts/preprocessed_dataset/` (~25–30 GB for full Mix-20).
+
+> **Planned but not implemented (original design doc):** drop empty pairs, drop lines &gt; 512 tokens at preprocess time, Arabic-script filter. Long lines are handled at **train time** via `SFTConfig(max_length=512)` (mapped to `max_length` on TRL 1.4). Outlier lines may log a tokenizer warning during the one-time tokenize pass; they are truncated to 512 tokens in training.
 
 **Instruction templating.** We use Qwen2.5's native ChatML template (the same template applies after a trivial rename for LLaMA-3.1, which uses an equivalent chat format). Both translation directions are formatted as one-turn user→assistant exchanges:
 
-EN→UG:
+EN→UG (system prompt in code: “helpful bilingual assistant … Translate the English input to Uyghur”):
 
 ```
 <|im_start|>system
-You are a translator between English and Uyghur.<|im_end|>
+You are a helpful bilingual assistant. Translate the English input to Uyghur.<|im_end|>
 <|im_start|>user
-Translate to Uyghur: {en_text}<|im_end|>
+{en_text}<|im_end|>
 <|im_start|>assistant
 {ug_text}<|im_end|>
 ```
 
-UG→EN:
+UG→EN mirrors with source/target languages swapped. **Both directions** are emitted for every kept pair (balanced by construction).
 
-```
-<|im_start|>system
-You are a translator between English and Uyghur.<|im_end|>
-<|im_start|>user
-Translate to English: {ug_text}<|im_end|>
-<|im_start|>assistant
-{en_text}<|im_end|>
-```
-
-Direction is sampled per-example with `p=0.5` (so each training batch is approximately balanced). The loss is masked to **the assistant tokens only** using `trl.DataCollatorForCompletionOnlyLM` with the response template `<|im_start|>assistant\n` — the model is not penalised for failing to reproduce the system+user preamble.
+At **train time**, `shared/training.py` templates `messages` → `text` and applies **`DataCollatorForCompletionOnlyLM`** with response template `<|im_start|>assistant\n` (TRL 1.4 on cluster). `assistant_only_loss=True` remains a fallback when the collator is unavailable (`PROJECT_REFINEMENT.md` §10).
 
 **Data mix (Mix-20).** 80 % CUTE-P instruction pairs · 20 % English-only FLAN samples (`Muennighoff/flan`, 50 000 random instructions with `seed=42`). FLAN samples wear the same ChatML template (`user: {instruction}\nassistant: {response}`). Mix-20 is the **core experiment**; Mix-{0, 10, 50} are stretch ablation cells.
 
-**Splits.**
+**Splits (three-way; implemented).**
 
-- Train: all of `cute_p_clean.jsonl` + 50 K FLAN samples, mixed Mix-20.
-- In-domain validation (sanity only): 1 000 held-out CUTE-P pairs.
-- Final evaluation: **FLORES-200 devtest** (1 012 sentences `eng_Latn` ↔ `uig_Arab`) + **WCM-v2** (Uyghur text classification). Both are unseen by the training data.
+| Split    | Source                                                              | Used for                                                                       | Code reference                       |
+| -------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------ |
+| `train`  | ~95 % of CUTE-P pairs (pair-level) + matching FLAN rows             | Gradient updates                                                               | `shared/training.py`                 |
+| `test`   | ~5 % held-out CUTE-P pairs + matching FLAN rows (configurable `test_split_pct`) | In-loop `eval_loss` every `eval_steps` → **overfit detector** in TensorBoard; also drives `EarlyStoppingCallback` and `load_best_model_at_end` | `shared/training.py`, `experiments/experiment_1/config.py` |
+| `eval`   | **External, never seen**: FLORES-200 devtest (`eng_Latn` ↔ `uig_Arab`), WCM-v2 Uyghur (`hfl/wcm-v2` → `minority/ug.txt`), C4 EN held-out PPL | Final reported numbers: **`--experiment 0`** = zero-shot Qwen + Llama; **`--experiment 1`** = fine-tuned Qwen only (`eval_variants` in config) | `shared/evaluation.py`, `experiments/experiment_{0,1}/` |
+
+The CUTE-P FLAN mix ratio (Mix-{0,10,20,50}) is computed against the **training pair count**, so the effective ratio is preserved after holding out the test pairs. Mix-20 means 80 % CUTE-P / 20 % FLAN among the rows the model trains on. See `PROJECT_REFINEMENT.md` §9 for why we moved away from the original `dataset/cute_p_valdev.jsonl` plan.
 
 ---
 
@@ -87,7 +85,10 @@ Direction is sampled per-example with `p=0.5` (so each training batch is approxi
 | Optimizer               | paged AdamW 8-bit         | Required by the QLoRA recipe; quantizes optimizer state to avoid VRAM blow-up                                                    |
 | Learning rate           | 2e-4                      | Cosine decay, 3 % warmup — QLoRA standard from Dettmers Table 4                                                                  |
 | Gradient checkpointing  | on, `use_reentrant=False` | Saves activation memory at ~20 % wall-clock cost; non-reentrant variant has smaller saved-state footprint                        |
-| Response masking        | yes                       | We never want to fit the prompt template                                                                                         |
+| Response masking        | yes (assistant-only loss) | `DataCollatorForCompletionOnlyLM` on templated `text` (primary); `assistant_only_loss` fallback (`PROJECT_REFINEMENT.md` §10) |
+| Seeding                 | `transformers.set_seed(42)` + `SFTConfig(seed=42, data_seed=42)` | Reproducible data shuffling, model init, dropout, and DataLoader order. GPU is still best-effort due to cuDNN nondeterminism. |
+| In-loop validation      | `eval_strategy="steps"`, `eval_steps=50` on held-out `test` split  | Overfit detector in TensorBoard (`train/loss` vs `eval/loss`); see splits table above |
+| Early stopping          | `EarlyStoppingCallback(patience=3)` + `load_best_model_at_end=True, metric_for_best_model="eval_loss"` | Stops when `eval_loss` stalls; final adapter is the best checkpoint seen, not the last (`PROJECT_REFINEMENT.md` §10) |
 
 
 Batch size, sequence length and attention implementation depend on the slice (Plan A vs Plan B below).
@@ -182,7 +183,7 @@ The CLI flag `--slice-size {10g, 20g}` selects between the two configs; the rest
 
 ### 3.D — Slurm Submission (both plans)
 
-`--partition priority`, `--gres=gpu:1`, `--time=5-00:00:00`, `--cpus-per-task=4`, `--mem=32G`. Job submission via `scripts/run_preflight.py` (preflight) and `scripts/run_train.py` (training). The wrap command sources a local `.env` so that `HF_TOKEN` reaches the compute node — verified end-to-end on the most recent preflight run.
+`--partition priority`, `--gres=gpu:1`, `--time=5-00:00:00`, `--cpus-per-task=8` (push default), `--mem=24G` (matches 24 GB VRAM; see `SERVER_CONFIG.md` §4.0.1). Job submission via `scripts/run_preflight.py` (preflight) and `scripts/push.py` (preprocess / train / eval). The wrap sources `.env` so `HF_TOKEN` reaches the compute node; `python -u` + `PYTHONUNBUFFERED=1` for live Slurm logs.
 
 ---
 

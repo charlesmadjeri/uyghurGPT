@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -14,12 +14,21 @@ class Experiment1Config:
     model: str = "qwen"
     mix: int = 20
     epochs: int = 3
-    sample_count: int | None = None
+    # Cap CUTE-P at ~100k pairs by default. Full corpus (~934k pairs) is
+    # ~5+ days of training even with packing+FA2; 100k fits in <1 day
+    # and is plenty for a credible Mix-20 result (eval is on FLORES+/
+    # WCM/C4, not held-out CUTE-P).
+    sample_count: int | None = 100_000
     results_root: str = "results"
 
     lora_rank: int = 16
     lora_alpha: int = 32
     per_device_train_batch_size: int = 4
+    # Eval batch must stay <= train: eval is unpacked and we don't slice
+    # logits ([bs, 512, vocab=152064] -> ~1.2 GB at bs=8). Keeping it at
+    # bs=1 plus prediction_loss_only=True fits in 24 GB VRAM alongside the
+    # 7B QLoRA backbone.
+    per_device_eval_batch_size: int = 1
     gradient_accumulation_steps: int = 4
     max_seq_length: int = 512
     learning_rate: float = 2e-4
@@ -28,19 +37,46 @@ class Experiment1Config:
     flan_seed: int = 42
     preprocess_num_proc: int = 8
 
+    # Held-out fraction from the CUTE-P+FLAN mix for in-loop overfit detection.
+    # NOT the final "eval" — that's external benchmarks (FLORES+/WCM/C4 PPL).
+    # Split is at parallel-pair level for CUTE-P (see shared/data.py).
+    test_split_pct: float = 0.05
+    eval_steps: int = 50
+    # Stop training when eval_loss hasn't improved for N evaluations.
+    # 0 disables early stopping (still loads best checkpoint at end).
+    early_stopping_patience: int = 3
+    early_stopping_threshold: float = 0.0
+
     flores_max_samples: int | None = None
     wcm_max_samples: int | None = None
     ppl_max_samples: int = 1000
 
+    # Zero-shot Qwen/Llama numbers do not depend on this run's adapter and
+    # are computed once by experiment 0 (see experiments/experiment_0).
+    # Experiment 1 therefore only re-evaluates the fine-tuned variant.
+    eval_variants: tuple[str, ...] = field(default_factory=lambda: ("qwen_finetuned",))
+
+    # Throughput knobs (see docs/SERVER_CONFIG.md §4.0.1).
+    # Sequence packing concatenates short rows into 512-token chunks
+    # (~2-3x speedup on CUTE-P). FlashAttention 2 is chosen at model
+    # load when the package is importable (~1.5x speedup); falls back
+    # to SDPA / eager otherwise. Both are safe to disable individually.
+    enable_packing: bool = True
+
     @classmethod
     def from_namespace(cls, args) -> "Experiment1Config":
-        return cls(
+        # Only forward sample_count when the CLI provided one; otherwise
+        # keep the dataclass default (so push.py without --sample-count
+        # still honours the 100k cap, while explicit overrides win).
+        kwargs = dict(
             model=args.model,
             mix=args.mix,
             epochs=args.epochs,
-            sample_count=args.sample_count,
             results_root=args.results_root,
         )
+        if getattr(args, "sample_count", None) is not None:
+            kwargs["sample_count"] = args.sample_count
+        return cls(**kwargs)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

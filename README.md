@@ -7,7 +7,9 @@ instruction tuning, and benchmark them against the **CUTE-Llama-P** baseline
 from Zhuang & Sun (COLING 2025) on FLORES-200, WCM-v2, and MiLiC-Eval. All
 four comparison models are size-matched to the 7–8B class.
 
-See [`docs/PROJECT.md`](docs/PROJECT.md) for the full project plan and
+See [`docs/PROJECT.md`](docs/PROJECT.md) for the full project plan,
+[`docs/SERVER_CONFIG.md`](docs/SERVER_CONFIG.md) for the end-to-end cluster
+bootstrap (`slurm.hj.se` → green preflight), and
 [`docs/RESEARCH.md`](docs/RESEARCH.md) for the prior research notes that led
 to this scope.
 
@@ -23,7 +25,8 @@ to this scope.
 uyghurGPT/
 ├── main.py                  # CLI entrypoint (preflight + experiment dispatch)
 ├── experiments/             # per-experiment pipelines
-│   └── experiment_1/        # core Qwen Mix-20 QLoRA (config + run)
+│   ├── experiment_0/        # zero-shot baselines (eval only; run once)
+│   └── experiment_1/        # core Qwen Mix-20 QLoRA (preprocess / train / eval)
 ├── shared/                  # cross-experiment modules
 │   ├── preflight.py         # Day-1 sanity checks
 │   ├── data.py              # CUTE-P + FLAN loading and instruction formatting
@@ -83,26 +86,47 @@ python3 -m pip install -r requirements.txt
 | Invocation | What it does |
 |------------|--------------|
 | `--mode preflight` | Day-1 sanity checks (tokenizer, QLoRA VRAM, CUTE-P sample, CUTE-Llama-P load) — writes `results/preflight/` |
-| `--experiment N --mode {preprocess,train,eval,all}` | Run a stage (or all stages) of experiment `N`. Currently `N=1` is the core Qwen Mix-20 QLoRA pipeline. |
+| `--experiment N --mode {preprocess,train,eval,all}` | Run a stage of experiment `N`. **`0`** = zero-shot Qwen + Llama on FLORES/WCM/C4 (eval only). **`1`** = preprocess + train + eval fine-tuned Qwen Mix-20 (external eval runs **`qwen_finetuned` only**). |
 
 Stage semantics for an experiment:
 
-- **`preprocess`** — load CUTE-P (local files or HF Hub fallback), build
-  bidirectional EN↔UG instructions, blend Mix-{0/10/20/50} FLAN EN-only
-  examples, save to `artifacts/preprocessed_dataset/`.
+- **`preprocess`** — load CUTE-P from `~/uyghurGPT/dataset/{en,uy}.txt`
+  (auto-downloaded once from `CMLI-NLP/CUTE-Datasets` if missing),
+  **stream** rows into Arrow via `Dataset.from_generator` (preprocess
+  peak RAM under 1 GB on the full ~934k-pair corpus), build bidirectional
+  EN↔UG instructions in conversational form (`{"messages": [...]}`),
+  blend Mix-{0/10/20/50} FLAN EN-only examples, apply a **pair-level
+  train/test split** (`test_split_pct=0.05` by default — splits at
+  parallel-pair level *before* bidirectional expansion, so the EN→UG
+  and UG→EN halves of a pair always land in the same split), and save
+  the resulting `DatasetDict` to `artifacts/preprocessed_dataset/`
+  (~25–30 GB on disk for Mix-20 at full scale). Locked in by
+  `tests/test_data_split.py`.
 - **`train`** — QLoRA fine-tune Qwen using the preprocessed dataset; cosine LR,
-  3% warmup, paged AdamW 8-bit, gradient checkpointing; checkpoints saved per
-  epoch under `checkpoints/<model_label>/`.
-- **`eval`** — FLORES-200 EN↔UG (chrF, BLEU), WCM-v2 accuracy, C4 perplexity
-  (catastrophic forgetting). Evaluates zero-shot Qwen, zero-shot LLaMA, and
-  the fine-tuned Qwen adapter; results to `artifacts/eval_*.json`.
+  3% warmup, paged AdamW 8-bit, gradient checkpointing, **assistant-only
+  loss** via `DataCollatorForCompletionOnlyLM` (messages templated to
+  `text` at train time; `assistant_only_loss` is a fallback on older TRL).
+  Sequences capped at `max_length=512` in `SFTConfig` (TRL 1.4 maps from
+  `max_seq_length` in config). Evaluates on the held-out `test` split every `eval_steps`
+  (TensorBoard `eval/loss`), with `EarlyStoppingCallback(patience=3)`
+  and `load_best_model_at_end=True`. The saved `final/` adapter is the
+  lowest-`eval_loss` checkpoint, not the last.
+- **`eval`** — external, never-seen benchmarks: FLORES+ EN↔UG (chrF, BLEU,
+  via `openlanguagedata/flores_plus` devtest), WCM-v2 Uyghur classification
+  (`hfl/wcm-v2` → `minority/ug.txt`), C4 perplexity (catastrophic forgetting).
+  Results land in `artifacts/eval_*.json`. **Which models run depends on the
+  experiment id:**
+  - **`--experiment 0`**: `qwen_zeroshot` + `llama_zeroshot` (no training;
+    run once per cluster — numbers do not change between fine-tunes).
+  - **`--experiment 1`**: `qwen_finetuned` only (adapter from this run's
+    `checkpoints/`). Compare against experiment 0 artifacts for baselines.
 - **`all`** — runs the three above sequentially in the same run directory.
 
 ## Day-1 preflight
 
 ```bash
 python3 main.py --mode preflight                       # local (CPU/GPU)
-python3 scripts/run_preflight.py --server compute-server  # as a single Slurm job
+python3 scripts/run_preflight.py --server ju-compute-server  # as a single Slurm job
 python3 main.py --mode preflight --check 1,2           # subset of checks
 ```
 
@@ -128,75 +152,138 @@ python3 main.py --experiment 1 --mode train      --run-id myrun
 python3 main.py --experiment 1 --mode eval       --run-id myrun
 ```
 
-## Run on compute server
+Zero-shot baselines (separate run directory; no preprocess/train):
 
 ```bash
-python3 scripts/push.py --server compute-server --model qwen --epochs 3
+python3 main.py --experiment 0 --mode eval --run-id zeroshot_baselines
+```
+
+## Run on compute server
+
+End-to-end cluster bootstrap (Python env, `HF_TOKEN`, gated repos,
+TRL/tensorboard quirks): see [`docs/SERVER_CONFIG.md`](docs/SERVER_CONFIG.md).
+SSH alias used throughout the scripts and docs: `ju-compute-server`
+(`mach25ku@jth-ai-06.hj.se:50001` in `~/.ssh/config`).
+
+```bash
+python3 scripts/push.py --server ju-compute-server --model qwen --epochs 3
 ```
 
 Force a new run instead of resuming the latest incomplete one:
 
 ```bash
-python3 scripts/push.py --server compute-server --model qwen --epochs 3 --new-run
+python3 scripts/push.py --server ju-compute-server --model qwen --epochs 3 --new-run
+```
+
+One-time zero-shot baselines (experiment 0; use a dedicated `--new-run` id):
+
+```bash
+python3 scripts/push.py --server ju-compute-server \
+  --experiment 0 --mode eval --new-run --time 8:00:00
+```
+
+Resume a specific failed run (must reuse the run id whose
+`preprocessed_dataset/` lives on the server):
+
+```bash
+python3 scripts/push.py --server ju-compute-server --mode train --run-id 20260523_182843
+```
+
+Re-run external benchmarks for a fine-tuned adapter only (skips zero-shot):
+
+```bash
+python3 scripts/push.py --server ju-compute-server \
+  --experiment 1 --mode eval --run-id 20260524_020432 --time 4:00:00
 ```
 
 Bootstrap missing Python packages on the server before training (the full
 HuggingFace fine-tuning stack):
 
 ```bash
-python3 scripts/push.py --server compute-server --new-run --install-deps
+python3 scripts/push.py --server ju-compute-server --new-run --install-deps
 ```
 
 Useful flags (defaults shown): `--mode all`, `--experiment 1`, `--time
-5-00:00:00`, `--cpus 8`, `--gpus 1`, `--partition priority`.
+5-00:00:00`, `--cpus 8`, `--gpus 1`, `--mem 24G`, `--partition priority`.
+See [`docs/SERVER_CONFIG.md`](docs/SERVER_CONFIG.md) §4.0.1 for the 24 GB
+VRAM/RAM budget and tuning levers.
 
 ## Monitor and pull results
 
 ```bash
 # Status only (squeue/sacct + pipeline stage from run_status.json)
-python3 scripts/check.py --server compute-server
+python3 scripts/check.py --server ju-compute-server
 
-# Fast TensorBoard sync (only logs/ + run_status.json + run_config.json)
-python3 scripts/check.py --server compute-server --logs
+# Fast TB-only sync (logs/ + checkpoints/*/runs/ event files,
+# plus run_status.json + run_config.json). Skips eval JSON and everything else.
+python3 scripts/check.py --server ju-compute-server --logs
 
-# Full pull (excludes checkpoints by default)
-python3 scripts/check.py --server compute-server --pull
+# Full pull — includes eval JSON, run status/config, AND TensorBoard event files
+# (under logs/ and checkpoints/*/runs/). Excludes adapter weight dirs
+# (checkpoint-*/, final/), the preprocessed dataset, and hf_cache by default.
+python3 scripts/check.py --server ju-compute-server --pull
 
 # Full pull including adapter weights
-python3 scripts/check.py --server compute-server --pull --pull-checkpoints
+python3 scripts/check.py --server ju-compute-server --pull --pull-checkpoints
 ```
 
 `run_status.json` advances through:
 `started → preprocessed → training → trained → evaluating → evaluated`.
-TB scalars (loss, learning rate, grad norm) are emitted every 10 steps:
+TensorBoard scalars are emitted every 10 steps (`train/loss`,
+`learning_rate`, `grad_norm`) and every `eval_steps=50` (`eval/loss`):
 
 ```bash
 tensorboard --logdir results
 ```
 
+A widening gap between `train/loss` and `eval/loss` is the overfit
+signal; `EarlyStoppingCallback(patience=3)` halts training once it
+stops closing.
+
 ## Per-run artifacts
 
-Each run writes to `results/run_<run_id>/experiment_<N>/`:
+Each run writes to `results/run_<run_id>/experiment_<N>/` (`N=0` for
+zero-shot baselines, `N=1` for the Mix-20 fine-tune). There is no single
+combined `eval_summary.json` across experiments — merge experiment 0 and
+experiment 1 artifacts when reporting.
 
-- `artifacts/run_config.json` — frozen hyperparameters
+- `artifacts/run_config.json` — frozen hyperparameters (includes `flan_seed`, `test_split_pct`, `eval_steps`, `early_stopping_patience`); the split is a deterministic function of these
 - `artifacts/run_status.json` — current pipeline stage and timestamp
-- `artifacts/preprocessed_dataset/` — HF-saved preprocess output
-- `artifacts/eval_<benchmark>.json` — one file per benchmark and variant
-- `checkpoints/<model_label>/` — LoRA adapters per epoch (e.g. `qwen_mix20`)
-- `logs/<model_label>/` — TensorBoard / TRL training logs
+- `artifacts/preprocessed_dataset/` — HF `DatasetDict` with `train` + `test` splits (experiment 1 only; see [Splits](#train--test--eval-split))
+- `artifacts/eval_<benchmark>_<variant>.json` — one file per external benchmark and variant (`eval_summary.json` aggregates variants in that experiment dir)
+- `checkpoints/<model_label>/` — LoRA adapters saved every `eval_steps`; `final/` is the best-`eval_loss` adapter
+- `logs/<model_label>/` and `checkpoints/<model_label>/runs/*` — TensorBoard event files
 
 Preflight runs once per cluster (not per experiment) and writes to
 `results/preflight/` instead.
 
+## Train / test / eval split
+
+| Split   | Source                                                                         | Used for                                                                       |
+|---------|--------------------------------------------------------------------------------|--------------------------------------------------------------------------------|
+| `train` | ~95 % of CUTE-P pairs (pair-level) + matching FLAN rows                        | gradient updates                                                               |
+| `test`  | ~5 % held-out CUTE-P pairs + matching FLAN rows (`test_split_pct=0.05`)        | in-loop `eval_loss` (overfit detector in TensorBoard) + `EarlyStoppingCallback` + `load_best_model_at_end` |
+| `eval`  | external, never-seen: FLORES+ devtest, WCM-v2, C4 EN PPL                       | final reported numbers (`--mode eval`)                                         |
+
+The CUTE-P split happens at **parallel-pair level**, *before* bidirectional
+expansion, so the EN→UG and UG→EN halves of any pair always live in the
+same split (no leakage). FLAN rows get an independent same-percentage
+row-level split. The invariants are locked in by `tests/test_data_split.py`
+(run with `pytest tests/`). Rationale: see
+[`docs/PROJECT_REFINEMENT.md`](docs/PROJECT_REFINEMENT.md) §9–11.
+
 ## Evaluation
+
+External benchmarks (run by `--mode eval` on experiment 0 or 1; the
+in-loop `eval_loss` above is the overfit detector, not a reported number):
 
 | Benchmark | Direction / Task | Metric | Tool |
 |-----------|------------------|--------|------|
-| FLORES-200 (devtest) | EN→UG | chrF, BLEU | `sacrebleu` |
-| FLORES-200 (devtest) | UG→EN | chrF, BLEU | `sacrebleu` |
-| WCM-v2 (Uyghur) | classification | Accuracy | HF datasets |
+| FLORES+ (devtest, [`openlanguagedata/flores_plus`](https://huggingface.co/datasets/openlanguagedata/flores_plus)) | EN→UG | chrF, BLEU | `sacrebleu` |
+| FLORES+ (devtest) | UG→EN | chrF, BLEU | `sacrebleu` |
+| WCM-v2 Uyghur (`hfl/wcm-v2` → `minority/ug.txt`, 300 rows, `text\tlabel`) | classification | Accuracy | `hf_hub_download` + `shared/evaluation.py` |
 | C4 (en, 1K samples) | held-out perplexity | PPL | `transformers` |
-| MiLiC-Eval | 9 tasks (stretch) | task-specific | HF datasets |
+| MiLiC-Eval (`pkupie/milic-eval`) | 9 tasks (stretch) | task-specific | HF datasets |
 
 All FLORES-200 numbers — for both our fine-tuned models and the baselines —
 are produced by us on **EN→UG and UG→EN**. The paper only publishes ZH→UG
