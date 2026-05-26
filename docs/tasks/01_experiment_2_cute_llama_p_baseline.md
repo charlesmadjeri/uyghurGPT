@@ -1,6 +1,6 @@
 # Task 01 — Experiment 2: CUTE-Llama-P few-shot baseline
 
-> **Status:** not started.
+> **Status:** running
 > **Depends on:** none (eval-only; preflight check 5 already PASS on the
 > current 24 GB MIG slice — see `results/preflight/check5.json`).
 > **Blocks:** Tasks 04 (consolidated results table), 05 (analysis), 06

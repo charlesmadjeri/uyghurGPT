@@ -1,6 +1,6 @@
 # Task 02 — WCM-v2 re-evaluation across variants
 
-> **Status:** waiting for results (except for cute-llama-p that need first to ).
+> **Status:** running
 > **Depends on:** none for the qwen / llama re-eval; Task 01 must land
 > first to also cover `cute_llama_p`.
 > **Blocks:** Task 04 (consolidated results table), Task 05 (analysis),

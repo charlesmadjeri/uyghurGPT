@@ -1,6 +1,6 @@
 # Task 03 — Fix the UG→EN decoding regression on the fine-tuned model
 
-> **Status:** not started.
+> **Status:** done
 > **Depends on:** none. Can run in parallel with Tasks 01 / 02.
 > **Blocks:** Task 04 (consolidated results table — the current
 > `qwen_finetuned` UG→EN chrF of 9.38 is almost certainly understated and
