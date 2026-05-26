@@ -48,6 +48,22 @@ Mix-20 on 100k CUTE-P pairs + 50k FLAN rows. `lora_rank=16`, `α=32`,
 | llama_zs    | 0.84              | 0.45              | 4.71              | 1.36              | n/a (ERROR)     | 13.69     |
 | **qwen_ft** | **14.18**         | 0.04              | 9.38              | 0.14              | n/a (ERROR)     | 16.17     |
 
+- **2026-05-26 WCM/eval backfill (Slurm job 2715).** Re-ran `--experiment 1 --mode eval`
+  on this run id (resumed adapter `checkpoints/qwen_mix20/final`) with the fixed
+  WCM loader (`minority/ug.txt` via `hf_hub_download`). FLORES EN→UG chrF / UG→EN
+  chrF and C4 PPL reproduced **byte-identically** (deterministic `do_sample=False`
+  decoding holds). Only new cell: **WCM `qwen_ft` accuracy = 7.33 %** (22/300).
+  Zero-shot WCM cells are populated by the parallel exp-0 run on the same date —
+  see the 2026-05-26 section below: `qwen_zs` 6.33 %, `llama_zs` 0.67 %.
+  *Caveat — WCM-v2 is methodologically broken at this protocol.* `minority/ug.txt`
+  is heavily imbalanced (256/300 rows = label `1`, i.e. 85.3 % majority-class
+  baseline; paper reports CUTE-Llama-P at 87.0 %). All three of our variants land
+  **below the 16.7 % random baseline**, i.e. the chat-template free-form prompt
+  in `shared/evaluation._classify_uyghur` is making the model emit free-form text
+  that incidentally contains a digit, not actually pick a label. Δ +1.0 % between
+  `qwen_ft` and `qwen_zs` is noise. Prompt + scoring fix tracked in
+  `docs/tasks/02_wcm_v2_reevaluation.md`.
+
 **Analysis.**
 
 - **EN→UG is the gain direction.** Fine-tuning lifts chrF by **+4.22**
@@ -70,6 +86,47 @@ Mix-20 on 100k CUTE-P pairs + 50k FLAN rows. `lora_rank=16`, `α=32`,
 - **Early stop at ~1.5 epochs** is reasonable given the loss curve was
   still trending down very slowly; a longer-patience run is a candidate
   for the next iteration once decoding for UG→EN is sanity-checked.
+
+---
+
+## 2026-05-26 — run_20260525_143722 (Slurm job 2714)
+
+**Setup.** First clean **experiment-0-only** zero-shot eval after the
+exp-0 / exp-1 split landed (`docs/PROJECT_REFINEMENT.md` §12). No
+training, no adapter loaded. Evaluates `qwen_zeroshot` + `llama_zeroshot`
+on the same external benchmarks as exp 1 (FLORES+ devtest EN↔UG,
+WCM-v2 Uyghur `minority/ug.txt`, C4 EN PPL on 1k samples). Replaces the
+legacy combined eval in `run_20260524_020432` for the zero-shot rows.
+
+**External benchmarks** (from `experiment_0/artifacts/eval_summary.json`):
+
+| Variant  | FLORES EN→UG chrF | FLORES EN→UG BLEU | FLORES UG→EN chrF | FLORES UG→EN BLEU | WCM Uyghur acc. | C4 EN PPL |
+|----------|-------------------|-------------------|-------------------|-------------------|-----------------|-----------|
+| qwen_zs  | 9.96              | 0.23              | **30.29**         | 4.09              | 6.33 % (19/300) | 16.59     |
+| llama_zs | 0.84              | 0.45              | 4.71              | 1.36              | 0.67 % (2/300)  | **13.69** |
+
+**Analysis.**
+
+- **FLORES + C4 PPL match the 2026-05-24 combined-run cells to four
+  decimals** — same models, same prompts, deterministic decoding.
+  Confirms the exp-0/exp-1 refactor introduced no eval drift; the
+  zero-shot baseline is now produced by experiment 0 alone and can be
+  pinned for the report.
+- **WCM-v2 numbers now populate without `ERROR`**, but the absolute
+  values are not informative: `minority/ug.txt` is 85.3 % majority-class
+  `1`; both zero-shot variants score *below random* (16.7 %). The fix is
+  not in the loader (loader is correct, returns 300 rows × `text`/`label`)
+  but in `_classify_uyghur` — it uses free-form generation + substring
+  matching, which can't return a constrained label. Tracked in
+  `docs/tasks/02_wcm_v2_reevaluation.md` (scope extended to also fix the
+  prompt + scoring path).
+- **No fine-tune row in this run.** `qwen_ft` lives in the
+  `run_20260524_020432` section above; the 2026-05-26 sub-bullet there
+  is the canonical place for the back-filled `qwen_ft` numbers.
+- **Outstanding gap before the minimum-results comparison can ship:**
+  Task 01 (CUTE-Llama-P few-shot baseline) still has no run dir.
+  Without it the FT-vs-CUTE-Llama-P column of the consolidated table
+  (`docs/tasks/04_consolidated_results_table.md`) is missing.
 
 ---
 
