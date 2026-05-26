@@ -47,6 +47,18 @@ def _find_adapter_path(run_root: Path, model_label: str) -> Path | None:
 
 
 def load_eval_model(model_choice: str, adapter_path: Path | None = None):
+    """Load a model + tokenizer for evaluation.
+
+    Two paths:
+
+    - ``cute_llama_p`` — base LM (Llama2-7B + vocab expansion). **No 4-bit
+      quantization** (preflight check 5 confirmed NF4 produces degenerate
+      output on this vocab-expanded base; fp16 is the validated path) and
+      no LoRA adapter. Uses ``subfolder=CUTE-Llama-Parallel`` +
+      ``trust_remote_code=True`` from ``shared.models.model_load_kwargs``.
+    - ``qwen`` / ``llama`` — instruct models. 4-bit NF4 quantization via
+      ``bnb_config()`` + optional LoRA adapter (used by ``qwen_finetuned``).
+    """
     from peft import PeftModel
     from transformers import AutoModelForCausalLM
 
@@ -56,21 +68,40 @@ def load_eval_model(model_choice: str, adapter_path: Path | None = None):
         dtype_kwarg,
         load_tokenizer,
         model_id,
+        model_load_kwargs,
     )
 
     mid = model_id(model_choice)
-    quant = bnb_config()
-    base = AutoModelForCausalLM.from_pretrained(
-        mid,
-        quantization_config=quant,
-        device_map={"": 0} if torch.cuda.is_available() else None,
-        attn_implementation="eager",
-        low_cpu_mem_usage=True,
-        **dtype_kwarg(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
-    )
-    if adapter_path is not None:
-        print(f"[eval] Loading adapter from {adapter_path}")
-        base = PeftModel.from_pretrained(base, str(adapter_path))
+    extra = model_load_kwargs(model_choice)
+
+    if model_choice == "cute_llama_p":
+        if adapter_path is not None:
+            raise ValueError(
+                "cute_llama_p is a base LM published as-is; loading a LoRA "
+                "adapter on top is not supported."
+            )
+        base = AutoModelForCausalLM.from_pretrained(
+            mid,
+            device_map={"": 0} if torch.cuda.is_available() else None,
+            attn_implementation="eager",
+            low_cpu_mem_usage=True,
+            **dtype_kwarg(torch.float16 if torch.cuda.is_available() else torch.float32),
+            **extra,
+        )
+    else:
+        quant = bnb_config()
+        base = AutoModelForCausalLM.from_pretrained(
+            mid,
+            quantization_config=quant,
+            device_map={"": 0} if torch.cuda.is_available() else None,
+            attn_implementation="eager",
+            low_cpu_mem_usage=True,
+            **dtype_kwarg(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
+            **extra,
+        )
+        if adapter_path is not None:
+            print(f"[eval] Loading adapter from {adapter_path}")
+            base = PeftModel.from_pretrained(base, str(adapter_path))
     base.eval()
     tokenizer = load_tokenizer(model_choice)
     align_special_tokens(base, tokenizer)
@@ -175,6 +206,113 @@ def generate_translation(model, tokenizer, source: str, src_lang: str, tgt_lang:
     return _clean_translation_output(decoded)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Few-shot continuation decoding (for base LMs without a chat template)
+# ──────────────────────────────────────────────────────────────────────────
+
+# Boundary literals that mark the *next* prompted continuation in a
+# few-shot continuation prompt. A base LM (e.g. CUTE-Llama-P) will happily
+# keep generating past its own answer into a fabricated next exemplar;
+# truncating at the first occurrence of any of these strings is the
+# documented preflight check 5 strategy (``shared/preflight.py::_generate_one``).
+_FEWSHOT_BOUNDARY_MARKERS = (
+    "\nEnglish:",
+    "\nUyghur:",
+    "\nChinese:",
+    "\n\n",
+)
+
+
+def build_fewshot_translation_prompt(
+    source: str,
+    src_lang: str,
+    tgt_lang: str,
+    exemplars: list[tuple[str, str]],
+) -> str:
+    """k-shot translation continuation prompt.
+
+    Format mirrors ``shared/preflight.py::_build_fewshot_prompt`` (validated
+    by preflight check 5):
+
+        {src_lang}: <exemplar source 1>
+        {tgt_lang}: <exemplar target 1>
+
+        {src_lang}: <exemplar source 2>
+        {tgt_lang}: <exemplar target 2>
+
+        ...
+
+        {src_lang}: <source>
+        {tgt_lang}:
+
+    Each exemplar string is truncated to 400 characters to keep the prompt
+    well under the model's context (CUTE-Llama-P inherits Llama 2's 4096 cap).
+    """
+    parts: list[str] = []
+    for ex_src, ex_tgt in exemplars:
+        parts.append(
+            f"{src_lang}: {ex_src[:400].strip()}\n"
+            f"{tgt_lang}: {ex_tgt[:400].strip()}"
+        )
+    parts.append(f"{src_lang}: {source}\n{tgt_lang}:")
+    return "\n\n".join(parts)
+
+
+def _trim_at_fewshot_boundary(text: str) -> str:
+    """Trim a few-shot continuation output at the first exemplar boundary.
+
+    Idempotent. Splits on the *earliest* occurrence of any string in
+    ``_FEWSHOT_BOUNDARY_MARKERS`` so a single helper covers all of
+    ``\\nEnglish:`` / ``\\nUyghur:`` / ``\\nChinese:`` / ``\\n\\n``.
+    """
+    earliest = len(text)
+    for marker in _FEWSHOT_BOUNDARY_MARKERS:
+        idx = text.find(marker)
+        if idx != -1 and idx < earliest:
+            earliest = idx
+    return text[:earliest].strip()
+
+
+@torch.inference_mode()
+def generate_translation_fewshot(
+    model,
+    tokenizer,
+    source: str,
+    src_lang: str,
+    tgt_lang: str,
+    exemplars: list[tuple[str, str]],
+    max_new_tokens: int = 200,
+    repetition_penalty: float = 1.15,
+) -> str:
+    """Few-shot continuation translation for base LMs (CUTE-Llama-P et al.).
+
+    Stop strategy (validated by preflight check 5 in ``shared/preflight.py``):
+
+    1. ``eos_token_id = tokenizer.eos_token_id`` — Llama 2's ``</s>`` survives
+       the vocab expansion.
+    2. ``repetition_penalty = 1.15`` — base LMs loop without it on few-shot
+       prompts; this value preserves Uyghur Arabic-script fluency.
+    3. **Post-decode hard-trim at the first exemplar boundary** —
+       see ``_trim_at_fewshot_boundary``. This is the equivalent of the
+       chat-marker hard-trim ``_clean_translation_output`` does for
+       instruct models.
+    """
+    prompt = build_fewshot_translation_prompt(source, src_lang, tgt_lang, exemplars)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    out = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        repetition_penalty=repetition_penalty,
+    )
+    new_ids = out[0][inputs["input_ids"].shape[1] :]
+    decoded = tokenizer.decode(new_ids, skip_special_tokens=True)
+    return _trim_at_fewshot_boundary(decoded)
+
+
 def _corpus_scores(hypotheses: list[str], references: list[str]) -> dict:
     import sacrebleu
 
@@ -187,18 +325,26 @@ def _corpus_scores(hypotheses: list[str], references: list[str]) -> dict:
     }
 
 
-def load_flores_pairs(max_samples: int | None = None) -> tuple[list[str], list[str]]:
-    """FLORES+ devtest (the public test set, 1012 sentences), id-aligned EN↔UG.
+def load_flores_pairs(
+    max_samples: int | None = None,
+    split: str = FLORES_SPLIT,
+) -> tuple[list[str], list[str]]:
+    """Id-aligned EN↔UG sentence pairs from one FLORES+ split.
 
-    Uses openlanguagedata/flores_plus per-language configs and joins on `id`,
-    so no dataset script is required (datasets >= 2.20 refuses scripts) and
-    the same source/splits are used by the preflight check 5 sanity test.
+    Defaults to ``devtest`` (the 1012-sentence public test set used by the
+    final eval). Pass ``split="dev"`` for the 997-sentence exemplar pool —
+    that is what ``load_flores_dev_exemplars`` reads to supply few-shot
+    examples to base-LM variants (CUTE-Llama-P).
+
+    Uses ``openlanguagedata/flores_plus`` per-language configs and joins on
+    ``id`` so no dataset script is required (datasets >= 2.20 refuses
+    scripts) and the same source is shared with the preflight check.
     """
     from datasets import load_dataset
 
     token = os.environ.get("HF_TOKEN")
-    ds_en = load_dataset(FLORES_REPO, FLORES_EN_CODE, split=FLORES_SPLIT, token=token)
-    ds_ug = load_dataset(FLORES_REPO, FLORES_UG_CODE, split=FLORES_SPLIT, token=token)
+    ds_en = load_dataset(FLORES_REPO, FLORES_EN_CODE, split=split, token=token)
+    ds_ug = load_dataset(FLORES_REPO, FLORES_UG_CODE, split=split, token=token)
     ug_by_id = {str(row["id"]): row["text"].strip() for row in ds_ug}
     en, ug = [], []
     for row in ds_en:
@@ -211,18 +357,81 @@ def load_flores_pairs(max_samples: int | None = None) -> tuple[list[str], list[s
     return en, ug
 
 
-def eval_flores(model, tokenizer, max_samples: int | None = None) -> dict:
+def load_flores_dev_exemplars(
+    k: int = 3,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Return ``(en2ug_exemplars, ug2en_exemplars)`` from the FLORES+ ``dev`` split.
+
+    Each list is ``k`` ``(source, target)`` pairs aligned by FLORES id. The
+    ``dev`` split is disjoint from ``devtest`` (test set), so using its first
+    ``k`` items as exemplars introduces no leakage.
+    """
+    en_dev, ug_dev = load_flores_pairs(max_samples=k, split="dev")
+    en2ug = list(zip(en_dev, ug_dev))
+    ug2en = list(zip(ug_dev, en_dev))
+    return en2ug, ug2en
+
+
+def eval_flores(
+    model,
+    tokenizer,
+    max_samples: int | None = None,
+    *,
+    prompt_style: str = "chat",
+    fewshot_k: int = 3,
+) -> dict:
+    """Evaluate FLORES+ devtest EN↔UG with the requested prompt style.
+
+    ``prompt_style="chat"`` (default) — chat-template + assistant-turn
+    decoding (Qwen, LLaMA-3.1, fine-tuned Qwen).
+
+    ``prompt_style="fewshot"`` — base-LM-friendly few-shot continuation
+    (CUTE-Llama-P). Exemplars come from the FLORES+ ``dev`` split (disjoint
+    from ``devtest``) per ``load_flores_dev_exemplars``.
+    """
     en, ug = load_flores_pairs(max_samples)
+    if prompt_style == "fewshot":
+        en2ug_ex, ug2en_ex = load_flores_dev_exemplars(k=fewshot_k)
+        print(
+            f"[eval] FLORES-200 n={len(en)} few-shot k={fewshot_k} "
+            f"(EN→UG then UG→EN) ..."
+        )
+    elif prompt_style == "chat":
+        en2ug_ex, ug2en_ex = ([], [])
+        print(f"[eval] FLORES-200 n={len(en)} chat (EN→UG then UG→EN) ...")
+    else:
+        raise ValueError(
+            f"Unknown FLORES prompt_style {prompt_style!r}; "
+            "expected 'chat' or 'fewshot'"
+        )
+
     en2ug_hyps, ug2en_hyps = [], []
-    print(f"[eval] FLORES-200 n={len(en)} (EN→UG then UG→EN) ...")
     for i, (e, u) in enumerate(zip(en, ug)):
-        en2ug_hyps.append(generate_translation(model, tokenizer, e, "English", "Uyghur"))
-        ug2en_hyps.append(generate_translation(model, tokenizer, u, "Uyghur", "English"))
+        if prompt_style == "fewshot":
+            en2ug_hyps.append(
+                generate_translation_fewshot(
+                    model, tokenizer, e, "English", "Uyghur", en2ug_ex
+                )
+            )
+            ug2en_hyps.append(
+                generate_translation_fewshot(
+                    model, tokenizer, u, "Uyghur", "English", ug2en_ex
+                )
+            )
+        else:
+            en2ug_hyps.append(
+                generate_translation(model, tokenizer, e, "English", "Uyghur")
+            )
+            ug2en_hyps.append(
+                generate_translation(model, tokenizer, u, "Uyghur", "English")
+            )
         if (i + 1) % 50 == 0:
             print(f"[eval]   {i + 1}/{len(en)}")
     return {
         "en2ug": _corpus_scores(en2ug_hyps, ug),
         "ug2en": _corpus_scores(ug2en_hyps, en),
+        "prompt_style": prompt_style,
+        "fewshot_k": fewshot_k if prompt_style == "fewshot" else 0,
     }
 
 
@@ -340,6 +549,31 @@ def _score_label_logprob(model, prompt_ids, label_ids) -> float:
     return log_probs.gather(-1, target).squeeze(-1).sum().item()
 
 
+def build_wcm_base_lm_prompt(
+    text: str,
+    labels: list[str],
+    exemplars: list[tuple[str, str]] | None = None,
+) -> str:
+    """Flat WCM-v2 classification prompt for base LMs (no chat template).
+
+    Mirrors the structure of ``_wcm_messages`` but emits a single string
+    that can be tokenized directly. Ends on a literal ``Label:`` cue so
+    the next-token log-likelihood scoring path is the same on both
+    instruct and base LMs.
+    """
+    label_str = ", ".join(labels[:20])
+    sections: list[str] = [
+        f"Classify the following Uyghur text. Reply with exactly one label "
+        f"from this set: {{{label_str}}}.",
+    ]
+    if exemplars:
+        sections.append("Examples:")
+        for ex_text, ex_label in exemplars:
+            sections.append(f"Text: {ex_text}\nLabel: {ex_label}")
+    sections.append(f"Text: {text}\nLabel:")
+    return "\n\n".join(sections)
+
+
 @torch.inference_mode()
 def _classify_uyghur(
     model,
@@ -347,20 +581,36 @@ def _classify_uyghur(
     text: str,
     labels: list[str],
     exemplars: list[tuple[str, str]] | None = None,
+    *,
+    prompt_style: str = "chat",
 ) -> str:
-    """Pick ``argmax_{l in labels} log P(l | chat_prompt(text))``.
+    """Pick ``argmax_{l in labels} log P(l | prompt(text))``.
 
     Constrained classification: the return value is always one of ``labels``,
     even if the model would otherwise emit free-form text. Deterministic
     under fixed weights (no sampling, no temperature).
+
+    ``prompt_style="chat"`` (default) routes through
+    ``tokenizer.apply_chat_template`` (Qwen / LLaMA-3.1 / fine-tuned Qwen).
+    ``prompt_style="base_lm"`` builds the flat string from
+    ``build_wcm_base_lm_prompt`` (CUTE-Llama-P).
     """
     if not labels:
         raise ValueError("labels must be a non-empty list")
 
-    messages = _wcm_messages(text, labels, exemplars)
-    prompt = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+    if prompt_style == "chat":
+        messages = _wcm_messages(text, labels, exemplars)
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    elif prompt_style == "base_lm":
+        prompt = build_wcm_base_lm_prompt(text, labels, exemplars)
+    else:
+        raise ValueError(
+            f"Unknown WCM prompt_style {prompt_style!r}; "
+            "expected 'chat' or 'base_lm'"
+        )
+
     prompt_enc = tokenizer(
         prompt, return_tensors="pt", truncation=True, max_length=2048
     )
@@ -378,15 +628,24 @@ def _classify_uyghur(
     return best_label
 
 
-def eval_wcm(model, tokenizer, max_samples: int | None = None) -> dict:
+def eval_wcm(
+    model,
+    tokenizer,
+    max_samples: int | None = None,
+    *,
+    prompt_style: str = "chat",
+) -> dict:
     ds, repo = _load_wcm_dataset(max_samples)
     text_col, label_col = _wcm_columns(ds)
     labels = sorted({str(x) for x in ds[label_col]})
     correct = 0
     total = len(ds)
-    print(f"[eval] WCM-v2 ({repo}) n={total} ...")
+    print(f"[eval] WCM-v2 ({repo}) n={total} style={prompt_style} ...")
     for row in ds:
-        pred = _classify_uyghur(model, tokenizer, str(row[text_col]), labels)
+        pred = _classify_uyghur(
+            model, tokenizer, str(row[text_col]), labels,
+            prompt_style=prompt_style,
+        )
         if pred == str(row[label_col]):
             correct += 1
     acc = correct / max(total, 1)
@@ -397,6 +656,7 @@ def eval_wcm(model, tokenizer, max_samples: int | None = None) -> dict:
         "total": total,
         "text_column": text_col,
         "label_column": label_col,
+        "prompt_style": prompt_style,
     }
 
 
@@ -434,7 +694,12 @@ def eval_english_perplexity(model, tokenizer, max_samples: int = 1000) -> dict:
     }
 
 
-ALL_EVAL_VARIANTS = ("qwen_zeroshot", "llama_zeroshot", "qwen_finetuned")
+ALL_EVAL_VARIANTS = (
+    "qwen_zeroshot",
+    "llama_zeroshot",
+    "qwen_finetuned",
+    "cute_llama_p",
+)
 
 
 def _variant_specs(cfg, run_root: Path) -> list[dict]:
@@ -443,6 +708,13 @@ def _variant_specs(cfg, run_root: Path) -> list[dict]:
     ``cfg.eval_variants`` is an iterable of labels from ``ALL_EVAL_VARIANTS``.
     When unset (None) we keep the historical behaviour and run every variant
     whose model/adapter is available.
+
+    Each spec records the ``prompt_style`` to use for FLORES and WCM:
+
+    - ``"chat"`` — chat-template prompt + chat-marker stop tokens
+      (Qwen, LLaMA-3.1, fine-tuned Qwen).
+    - ``"fewshot"`` — few-shot continuation prompt + exemplar-boundary
+      hard-trim (CUTE-Llama-P; see ``generate_translation_fewshot``).
     """
     requested = getattr(cfg, "eval_variants", None)
     if requested is None:
@@ -457,17 +729,29 @@ def _variant_specs(cfg, run_root: Path) -> list[dict]:
 
     specs: list[dict] = []
     if "qwen_zeroshot" in wanted:
-        specs.append({"label": "qwen_zeroshot", "model": "qwen", "adapter": None})
+        specs.append({
+            "label": "qwen_zeroshot", "model": "qwen", "adapter": None,
+            "flores_prompt_style": "chat", "wcm_prompt_style": "chat",
+        })
     if "llama_zeroshot" in wanted:
-        specs.append({"label": "llama_zeroshot", "model": "llama", "adapter": None})
+        specs.append({
+            "label": "llama_zeroshot", "model": "llama", "adapter": None,
+            "flores_prompt_style": "chat", "wcm_prompt_style": "chat",
+        })
     if "qwen_finetuned" in wanted:
         adapter = _find_adapter_path(run_root, cfg.model_label)
         if adapter:
-            specs.append(
-                {"label": "qwen_finetuned", "model": "qwen", "adapter": adapter}
-            )
+            specs.append({
+                "label": "qwen_finetuned", "model": "qwen", "adapter": adapter,
+                "flores_prompt_style": "chat", "wcm_prompt_style": "chat",
+            })
         else:
             print("[eval] WARNING: no fine-tuned adapter found; skipping qwen_finetuned")
+    if "cute_llama_p" in wanted:
+        specs.append({
+            "label": "cute_llama_p", "model": "cute_llama_p", "adapter": None,
+            "flores_prompt_style": "fewshot", "wcm_prompt_style": "base_lm",
+        })
     return specs
 
 
@@ -477,16 +761,29 @@ def run_eval(cfg, run_root: Path) -> None:
 
     for spec in _variant_specs(cfg, run_root):
         label = spec["label"]
-        print(f"\n[eval] === {label} ===")
+        flores_style = spec.get("flores_prompt_style", "chat")
+        wcm_style = spec.get("wcm_prompt_style", "chat")
+        print(f"\n[eval] === {label} (flores={flores_style}, wcm={wcm_style}) ===")
         model, tokenizer = load_eval_model(spec["model"], spec.get("adapter"))
-        variant = {"model": spec["model"], "adapter": str(spec["adapter"]) if spec["adapter"] else None}
+        variant = {
+            "model": spec["model"],
+            "adapter": str(spec["adapter"]) if spec["adapter"] else None,
+        }
 
-        flores = eval_flores(model, tokenizer, cfg.flores_max_samples or cfg.sample_count)
+        flores = eval_flores(
+            model, tokenizer,
+            cfg.flores_max_samples or cfg.sample_count,
+            prompt_style=flores_style,
+        )
         write_eval_artifact(run_root, f"flores_{label}", {"variant": variant, **flores})
         variant["flores"] = flores
 
         try:
-            wcm = eval_wcm(model, tokenizer, cfg.wcm_max_samples or cfg.sample_count)
+            wcm = eval_wcm(
+                model, tokenizer,
+                cfg.wcm_max_samples or cfg.sample_count,
+                prompt_style=wcm_style,
+            )
             write_eval_artifact(run_root, f"wcm_{label}", {"variant": variant, **wcm})
             variant["wcm"] = wcm
         except Exception as e:

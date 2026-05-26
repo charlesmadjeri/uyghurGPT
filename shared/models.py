@@ -1,15 +1,42 @@
-"""Model identifiers and chat/QLoRA helpers shared across experiments."""
+"""Model identifiers and chat/QLoRA helpers shared across experiments.
+
+Heavy ML deps (``transformers``) are imported lazily inside the helpers
+that need them so pure-Python utilities (``MODEL_IDS``, ``model_id``,
+``model_load_kwargs``, ``attn_implementation``, ``response_template``) can
+be inspected from unit tests without installing the full eval stack.
+"""
 
 from __future__ import annotations
 
 import os
 
-from transformers import AutoTokenizer
-
 MODEL_IDS = {
     "qwen": "Qwen/Qwen2.5-7B-Instruct",
     "llama": "meta-llama/Llama-3.1-8B-Instruct",
+    # CUTE-Llama-P (Zhuang & Sun, COLING 2025): Llama2-7B + ~155 K vocab
+    # expansion + continued pretraining on CUTE-P. Lives in a subfolder of
+    # the CMLI-NLP/CUTE-Llama HF repo (the same repo hosts the NP variant);
+    # use ``model_load_kwargs("cute_llama_p")`` to get the matching
+    # ``subfolder=`` and ``trust_remote_code=`` kwargs.
+    "cute_llama_p": "CMLI-NLP/CUTE-Llama",
 }
+
+# Extra ``from_pretrained`` kwargs that must accompany ``MODEL_IDS[choice]``
+# for HF to resolve the right snapshot / behaviour. Empty for the
+# instruct-tuned models (Qwen, Llama-3.1) which sit at the repo root.
+_MODEL_LOAD_KWARGS = {
+    "cute_llama_p": {
+        "subfolder": "CUTE-Llama-Parallel",
+        "trust_remote_code": True,
+    },
+}
+
+
+def model_load_kwargs(choice: str) -> dict:
+    """Extra ``from_pretrained`` kwargs (subfolder, trust_remote_code, …)
+    that must be passed alongside ``model_id(choice)``.
+    """
+    return dict(_MODEL_LOAD_KWARGS.get(choice, {}))
 
 # TRL packing / padding-free training requires a flash-attn backend so
 # flattened sequences do not cross-contaminate between packed samples.
@@ -111,7 +138,12 @@ def bnb_config():
 
 
 def load_tokenizer(model_choice: str, max_seq_length: int | None = None):
-    tok = AutoTokenizer.from_pretrained(model_id(model_choice), use_fast=True)
+    from transformers import AutoTokenizer
+
+    extra = model_load_kwargs(model_choice)
+    tok = AutoTokenizer.from_pretrained(
+        model_id(model_choice), use_fast=True, **extra
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     if max_seq_length is not None:
