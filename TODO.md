@@ -14,10 +14,20 @@ Pop entries from here as they land; once `TODO.md` is empty, delete it.
 > (experiment-2 CUTE-Llama-P) just to run this — they are required for
 > the final results table; the diagnostic is informational.
 
-Script + the latest `shared/evaluation.py` are already synced to
-`~/uyghurGPT/` on `ju-compute-server`.
+**Step 1 — push code (mirrors `scripts/push.py`'s rsync invocation; the
+diagnostic is a stand-alone script, not a `main.py` mode, so it doesn't
+go through `push.py` directly):**
 
-**Submit (when a slot is free):**
+```bash
+rsync -avz --progress \
+  --exclude=results/ --exclude=results.archive/ --exclude=__pycache__/ \
+  --exclude=*.pyc --exclude=.git/ --exclude=.venv/ --exclude=*.ipynb \
+  --exclude=docs/papers/ --exclude=dataset/ --exclude=models/ \
+  --exclude=checkpoints/ \
+  ./ ju-compute-server:~/uyghurGPT/
+```
+
+**Step 2 — submit (only once a queue slot is free):**
 
 ```bash
 ssh ju-compute-server 'cd ~/uyghurGPT && mkdir -p results/debug && sbatch \
@@ -32,7 +42,7 @@ ssh ju-compute-server 'cd ~/uyghurGPT && mkdir -p results/debug && sbatch \
       scripts/debug_ug2en.py --compare-zeroshot -n 20"'
 ```
 
-**Pull the report:**
+**Step 3 — pull the report once the job completes:**
 
 ```bash
 rsync -avz ju-compute-server:~/uyghurGPT/results/debug/ results/debug/
