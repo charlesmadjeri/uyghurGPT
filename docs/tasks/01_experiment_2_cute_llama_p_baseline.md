@@ -1,13 +1,17 @@
 # Task 01 — Experiment 2: CUTE-Llama-P few-shot baseline
 
-> **Status:** running
+> **Status:** running (code shipped; cluster results pending — Slurm
+> `2745` timed out at 6 h on `[eval] 50/1012` EN→UG, no artifacts.
+> Resubmitted as Slurm `2750` / `run_20260526_222254` with 24 h walltime;
+> waiting on it to land).
 > **Depends on:** none (eval-only; preflight check 5 already PASS on the
 > current 24 GB MIG slice — see `results/preflight/check5.json`).
 > **Blocks:** Tasks 04 (consolidated results table), 05 (analysis), 06
 > (final report).
-> **Estimated wall-clock:** ~3–4 h on the 24 GB MIG slice (FLORES devtest
-> 1012 sentences × 2 directions + 300 WCM rows + 1k C4 PPL samples;
-> CUTE-Llama-P is fp16 and loads in ~10 GB, so generation is the bottleneck).
+> **Estimated wall-clock:** **24 h** on the 24 GB MIG slice. The
+> original ~3–4 h estimate was wrong — fp16 7B + eager attention +
+> `repetition_penalty` on FLORES devtest 1012 × 2 directions runs at
+> ~30 s/sentence (Slurm 2745 telemetry). Budget 1 day, not 6 h.
 
 ## Goal
 
@@ -63,8 +67,13 @@ the report we cannot answer the actual research question.
    `results/run_<id>/experiment_2/artifacts/eval_summary.json` with the
    `cute_llama_p` row populated for FLORES EN→UG / UG→EN, WCM-v2, and C4
    PPL.
-6. A new section in `docs/PROJECT_RESULTS.md` for this run (use the
-   existing template at the bottom of that file).
+6. `docs/PROJECT_RESULTS.md` updated in **the same commit** that pulls
+   the artifacts: append a dated bullet to §1 *Change log* with the
+   `cute_llama_p` deltas, and populate the `cute_llama_p` row of §2
+   *Final results — core experiments* (plus the matching cell in §2's
+   "Sources for populated cells" sub-table). Do **not** add a new
+   per-run section — the legacy template at the bottom of that file is
+   superseded by the §1 + §2 layout.
 
 ## Implementation plan
 
@@ -172,14 +181,16 @@ def run(args):
   importing `experiments.experiment_2`.
 - `scripts/push.py` accepts `--experiment 2` (the `--experiment` argparse
   default of `1` is already there, just make sure the experiment-aware
-  `--time` picker handles `2`; reuse the experiment-0 default of
-  `6:00:00`).
+  `--time` picker handles `2`). **The current default of `6:00:00` is
+  too short** — Slurm 2745 timed out at 6 h on `[eval] 50/1012`. Pass
+  `--time 1-00:00:00` explicitly, or raise the default in `push.py`
+  before the next submission. Calibrate downwards once a full run lands.
 
 ### Step 5 — run it
 
 ```bash
 python3 scripts/push.py --server ju-compute-server \
-  --experiment 2 --mode eval --new-run --time 6:00:00
+  --experiment 2 --mode eval --new-run --time 1-00:00:00
 ```
 
 Monitor with `python3 scripts/check.py --server ju-compute-server`. Pull
@@ -197,8 +208,11 @@ results with `python3 scripts/check.py --server ju-compute-server --pull`.
 3. `cute_llama_p.flores.ug2en.chrF ≤ cute_llama_p.flores.en2ug.chrF + 25`
    (CUTE-Llama-P was trained Chinese→Uyghur direction and is not expected
    to be strong on UG→EN; this is just a sanity bound).
-4. The script writes a `PROJECT_RESULTS.md` section using the template at
-   the bottom of that file, dated with today's date and the Slurm job id.
+4. `PROJECT_RESULTS.md` is updated per Deliverable 6: a dated bullet
+   in §1 *Change log* with the Slurm job id, and the `cute_llama_p` row
+   of §2 *Final results — core experiments* (plus the §2 source-cell
+   sub-table) is no longer `pending`. Both edits land in the same
+   commit as the artifact pull.
 5. Tests still pass: `pytest tests/` (the data-split contract suite is
    unaffected; this task only touches the eval path).
 
@@ -212,6 +226,7 @@ results with `python3 scripts/check.py --server ju-compute-server --pull`.
   loader (`_load_flores_fewshot`).
 - Baseline scope and prompting protocol: `docs/PROJECT.md`
   §CUTE-Llama-P Baseline.
-- Wall-clock budget rationale: `docs/PROJECT_RESULTS.md` (use the
-  observed experiment 0 wall of ~3h36m as a starting estimate; FLORES
-  generation on a 7B base LM is comparable cost).
+- Wall-clock budget rationale: `docs/PROJECT_RESULTS.md` §1 (Slurm
+  2745, timed out at 6 h on `[eval] 50/1012` EN→UG) — fp16 7B base LM
+  generation is **not** comparable to the quantized exp-0 wall. Budget
+  24 h until the first full run calibrates the number.

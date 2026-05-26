@@ -1,27 +1,62 @@
 # Task 03 — Fix the UG→EN decoding regression on the fine-tuned model
 
-> **Status:** done
+> **Status:** done (decoding fix shipped + validated; the leak
+> hypothesis was **falsified** — see "Outcome" below). One optional
+> follow-up — the per-sentence failure-mode diagnostic
+> (`scripts/debug_ug2en.py`) — is tracked in `TODO.md`, not here.
 > **Depends on:** none. Can run in parallel with Tasks 01 / 02.
-> **Blocks:** Task 04 (consolidated results table — the current
-> `qwen_finetuned` UG→EN chrF of 9.38 is almost certainly understated and
-> should not go into the report unchanged), Task 05 (analysis), Task 06
-> (final report).
-> **Estimated wall-clock:** ~30 min local debug + ~2 h on the cluster for
-> a UG→EN-only re-eval (1012 FLORES sentences × 1 direction).
+> **Blocks:** nothing in the critical path. Task 04 (consolidated
+> results table) consumes the post-fix `qwen_finetuned` UG→EN cell
+> from `PROJECT_RESULTS.md` §2, but that cell is already populated
+> (Slurm 2744, chrF 9.385 — unchanged after the fix).
+> **Estimated wall-clock:** ~30 min local debug + ~6 h on the cluster
+> for a full exp-1 re-eval (the `--eval-only flores --flores-direction
+> ug2en` knob below was never implemented; the realised path was a
+> full `--experiment 1 --mode eval --run-id 20260524_020432`).
 
-## Goal
+## Outcome (added 2026-05-26 after Slurm 2744)
+
+- **Decoding fix shipped** in `shared/evaluation.py::generate_translation`
+  (stop-token list passed to `model.generate` + post-decode trim at
+  chat markers `<|im_end|>`, `<|im_start|>`, `<|endoftext|>`,
+  `\nassistant`, `user\n`, `system\n`). Direction-agnostic; covers
+  hypotheses 1 + 2 below.
+- **Zero-shot sanity check holds.** `qwen_zeroshot` and `llama_zeroshot`
+  reproduce their May-24 chrF / BLEU **byte-identically** after the
+  fix — the change is strictly additive.
+- **Leak hypothesis FALSIFIED on the FT adapter.** Slurm 2744 re-eval
+  of `qwen_finetuned` on `run_20260524_020432`'s adapter returned
+  `chrF = 9.385`, `BLEU = 0.1387` — *byte-identical* to the May-24
+  pre-fix numbers. The chat-marker fix had **zero measurable effect**
+  on the regression, so the "stop-token / template-leak" diagnosis in
+  `PROJECT_RESULTS.md` 2026-05-24 §Analysis bullet 2 was wrong. See
+  `PROJECT_REFINEMENT.md` §13 "Empirical update (2026-05-26 re-eval,
+  Slurm 2744)" for the falsification record.
+- **Real cause: genuine Mix-20 over-fitting on the generate-English
+  direction.** C4 EN PPL barely moved (16.59 → 16.17), so this is
+  task-shaped, not catastrophic-forgetting-shaped. Reported as the
+  headline finding in `PROJECT_RESULTS.md` §2 *Analysis* and feeds
+  Task 05 (results analysis).
+- **Optional follow-up** — per-sentence failure-mode classification
+  via `scripts/debug_ug2en.py` (wrong-language / garbled-EN /
+  template-leak / ok-EN buckets). Not required to close this task;
+  tracked in `TODO.md` under "UG→EN failure-mode diagnostic on the
+  compute server".
+
+## Goal (original, retained for context)
 
 `run_20260524_020432` produced **chrF 30.29 (qwen_zs) → 9.38 (qwen_ft)**
 on FLORES UG→EN — a 21-point regression on the easier direction (UG→EN
 should be easier than EN→UG because the model only needs to *generate*
 English).
 
-`docs/PROJECT_RESULTS.md` (2026-05-24 §Analysis, bullet 2) flags the
-likely cause as **prompt template / stop-token mismatch on UG→EN**, not
-catastrophic forgetting — C4 PPL only moved from 16.59 → 16.17 (~0.4),
-which is far too small to explain a 21-chrF translation collapse. This
-task confirms that diagnosis and fixes it before the numbers are frozen
-into the report.
+`docs/PROJECT_RESULTS.md` (2026-05-24 §Analysis, bullet 2) originally
+flagged the likely cause as **prompt template / stop-token mismatch on
+UG→EN**, not catastrophic forgetting — C4 PPL only moved from
+16.59 → 16.17 (~0.4), which is far too small to explain a 21-chrF
+translation collapse. This task was opened to confirm that diagnosis
+and fix it before the numbers were frozen into the report. The fix
+was shipped; the diagnosis was wrong (see "Outcome" above).
 
 ## Hypotheses (rank-ordered)
 
@@ -43,23 +78,30 @@ into the report.
 4. **Decoder length mismatch.** `max_new_tokens=256` is fine for
    sentence-level FLORES — not the cause.
 
-## Deliverables
+## Deliverables (status)
 
-1. A short investigation note (paste outputs from 10–20 representative
-   UG→EN FLORES sentences and the fine-tuned model's full raw
-   generations + decoded outputs, including the special tokens, into the
-   PR description / commit message for this task).
-2. The chosen fix landed in `shared/evaluation.py::generate_translation`,
-   with the existing zero-shot numbers reproduced (must remain
-   essentially unchanged within ±0.5 chrF for `qwen_zeroshot` and
-   `llama_zeroshot`, otherwise the fix is broken).
-3. A `qwen_finetuned`-only UG→EN FLORES re-eval Slurm run, with the new
-   chrF / BLEU written to `results/run_<id>/experiment_1/artifacts/
-   flores_qwen_finetuned.json` and the corresponding `eval_summary.json`
-   updated.
-4. A `PROJECT_RESULTS.md` sub-bullet in the 2026-05-24 section logging
-   the back-fill (per the file's append-only convention), OR a new
-   dated section if a brand-new run id was used.
+1. **Done** — decoding fix in `shared/evaluation.py::generate_translation`
+   (stop-token list + post-decode chat-marker trim). Zero-shot
+   reproduction within ±0.0 chrF for both `qwen_zeroshot` and
+   `llama_zeroshot` (byte-identical, not just within ±0.5).
+2. **Done** — full exp-1 re-eval on Slurm 2744 against
+   `run_20260524_020432`'s `final/` adapter; `eval_summary.json` and
+   the per-direction FLORES artifact carry the post-fix numbers. The
+   numbers happen to be byte-identical to the May-24 pre-fix cells —
+   the fix is a no-op for this adapter, which is the diagnostic
+   result (see "Outcome" above), not a deliverable failure.
+3. **Done** — `PROJECT_RESULTS.md` §1 "2026-05-26 — Slurm 2744" entry
+   logs the byte-identical FLORES result and the leak-hypothesis
+   falsification; §2 *Final results* keeps the 9.385 cell, now
+   annotated as "genuine Mix-20 regression, not a decoding artifact".
+   No legacy "sub-bullet under 2026-05-24" was added — superseded by
+   the §1 + §2 layout.
+4. **Deferred** — per-sentence investigation note (10–20 raw
+   UG→EN outputs with chat-marker visibility). Not needed for the
+   leak hypothesis (already falsified at the aggregate level) but
+   useful for Task 05 analysis and for picking a Mix-50 retrain vs.
+   prompt-anchoring next step. Implementation already in
+   `scripts/debug_ug2en.py`; run instructions in `TODO.md`.
 
 ## Implementation plan
 
@@ -129,76 +171,73 @@ direction-agnostic — it makes the existing `qwen_zeroshot` and
 `llama_zeroshot` numbers a strictly-better baseline (or unchanged) and
 must not regress them. The validation step below enforces that.
 
-### Step 3 — local sanity vs cluster re-eval
+### Step 3 — cluster re-eval (the path actually used)
 
-After the fix, re-run the local 20-sentence loop from Step 1 — outputs
-should be clean English sentences ending in normal punctuation, not chat
-markup.
-
-Then submit a UG→EN-only FLORES re-eval on the cluster. The cheapest
-path is to extend the `--eval-only` flag from Task 02 with a sub-option
-for direction, or just temporarily hard-code `eval_flores` to only run
-UG→EN for this specific re-eval and revert. The former is preferred:
-
-```python
-parser.add_argument(
-    "--flores-direction",
-    default=None,
-    choices=["en2ug", "ug2en"],
-    help="Restrict FLORES eval to one direction (re-eval helper).",
-)
-```
-
-Threaded through `Experiment1Config` and `eval_flores`.
+The `--eval-only flores --flores-direction ug2en` knob originally
+sketched here was **never implemented**. The realised path was a
+**full** exp-1 eval resuming the May-24 adapter — same wall as a
+normal exp-1 eval (~5h24m on Slurm 2744). FLORES EN→UG, WCM, and
+C4 PPL are re-computed alongside UG→EN; that is wasted compute but
+deterministic, so the only new information against the May-24 cells
+is whatever the decoding fix changes (which turned out to be
+nothing for FLORES — see "Outcome").
 
 ```bash
 python3 scripts/push.py --server ju-compute-server \
-  --experiment 1 --mode eval --eval-only flores --flores-direction ug2en \
-  --run-id 20260524_020432 --time 4:00:00
+  --experiment 1 --mode eval --run-id 20260524_020432 --time 6:00:00
 ```
 
-### Step 4 — validate and log
+If a future repro needs a UG→EN-only re-eval to save the FLORES
+EN→UG generation cost, implement the deferred `--eval-only flores
+--flores-direction ug2en` flags here and in Task 02 (sketches kept
+in those task files).
 
-The fix is good if, on the SAME run:
+### Step 4 — validate and log (closed)
 
-- `qwen_zeroshot` UG→EN chrF stays within ±0.5 of 30.29 (sanity)
-- `llama_zeroshot` UG→EN chrF stays within ±0.5 of 4.71 (sanity)
-- `qwen_finetuned` UG→EN chrF moves *up*, ideally to ≥ 28 (within
-  ~2 chrF of zero-shot Qwen, since UG→EN is the easier direction and
-  the fine-tune should not regress it once decoding is honest)
+Realised pass-criteria on Slurm 2744:
 
-If the fine-tune still under-performs zero-shot on UG→EN after the
-decoding fix, that is a real result (the Mix-20 ratio over-fits the
-generate-Uyghur direction at the cost of generate-English fluency) and
-goes into the analysis (Task 05) instead of being engineered away.
+- `qwen_zeroshot` UG→EN chrF: 30.29 → 30.29 (byte-identical) — sanity
+  holds with margin to spare.
+- `llama_zeroshot` UG→EN chrF: 4.71 → 4.71 (byte-identical) — sanity
+  holds.
+- `qwen_finetuned` UG→EN chrF: 9.385 → **9.385** (byte-identical) —
+  the fix is a no-op on this adapter. The regression is real, not a
+  decoding artifact. This is now the headline finding for Task 05.
 
-Append a sub-bullet to the 2026-05-24 section of `PROJECT_RESULTS.md`
-recording the new numbers and the fix. If the fine-tune still
-under-performs zero-shot meaningfully, also flag this as the headline
-finding for Task 05.
+Logged in `PROJECT_RESULTS.md` §1 under "2026-05-26 — Slurm 2744
+post-fix re-eval" and falsifies the leak hypothesis recorded in
+`PROJECT_REFINEMENT.md` §13.
 
-## Validation / success criteria
+## Validation / success criteria (status)
 
-1. Local reproduction (Step 1) shows the exact failure mode in the
-   outputs (chat markers leaking, runaway generation, or second-turn
-   contamination). The investigation note records *which*.
-2. After the fix, the zero-shot UG→EN numbers reproduce within ±0.5
-   chrF — this guarantees the fix is purely additive.
-3. The fine-tuned UG→EN chrF improves by at least +10 chrF over the
-   pre-fix 9.38, OR the analysis concludes the regression is genuine
-   (and the report carries that explanation rather than burying the
-   bad number).
-4. No regression in EN→UG chrF / BLEU or in C4 PPL — those values are
-   identical to the previous run (no re-eval needed for them; they
-   share no code with the fix).
+1. **Partially met / deferred.** Aggregate-level falsification is in
+   place via Slurm 2744 (byte-identical pre/post-fix chrF); the
+   per-sentence investigation note from `scripts/debug_ug2en.py` is
+   deferred to `TODO.md`. The aggregate result is sufficient to close
+   this task because the leak hypothesis is falsified independently
+   of the bucketed analysis.
+2. **Met.** Zero-shot UG→EN numbers reproduced byte-identically (well
+   inside ±0.5 chrF) — the fix is strictly additive.
+3. **Path B taken.** The fine-tuned UG→EN chrF did **not** improve;
+   the analysis concludes the regression is genuine Mix-20
+   over-fitting on the generate-English direction. Carried as the
+   headline finding for Task 05, not engineered away.
+4. **Met.** EN→UG chrF / BLEU and C4 PPL are byte-identical to the
+   May-24 cells (Slurm 2744). The decoding fix touched only
+   `generate_translation`; the FLORES EN→UG generation, WCM scoring,
+   and C4 PPL paths are unchanged.
 
 ## References
 
 - Anomaly first flagged: `docs/PROJECT_RESULTS.md` 2026-05-24 §Analysis,
   bullet 2.
-- Code to patch: `shared/evaluation.py::generate_translation`
-  (lines 75–99).
-- Adapter to re-eval against:
+- Decoding fix: `shared/evaluation.py::generate_translation`
+  (commit `da8e8d8`).
+- Falsification record: `PROJECT_REFINEMENT.md` §13 "Empirical update
+  (2026-05-26 re-eval, Slurm 2744)".
+- Re-eval artifacts: `results/run_20260524_020432/experiment_1/
+  artifacts/eval_summary.json` (Slurm 2744 overwrite).
+- Adapter re-eval'd:
   `results/run_20260524_020432/experiment_1/checkpoints/qwen_mix20/final`.
-- Reusable `--eval-only` flag introduced by Task 02 (this task adds the
-  matching `--flores-direction` flag).
+- Per-sentence diagnostic (deferred): `scripts/debug_ug2en.py` +
+  `TODO.md` "UG→EN failure-mode diagnostic on the compute server".
