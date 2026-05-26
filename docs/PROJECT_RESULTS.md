@@ -1,202 +1,230 @@
-# Project Results — Run-by-run log
+# Project Results
 
-This file is the single source of truth for **what we measured, when, and
-why it changed**. Each entry is a `## YYYY-MM-DD — run_<id>` section
-containing the snapshot of external benchmark numbers for that run plus a
-short analysis of how they moved against the previous entry.
+This file is the single source of truth for **what we measured and how
+the numbers moved**. It has three sections:
 
-**Convention.** Sections are listed in chronological order (oldest first);
-the **last section's table is therefore always the current latest result**.
-A new run = a new section appended to the bottom, never a rewrite of an
-older one. If a re-evaluation supersedes a number for a given run (e.g.
-WCM-v2 backfilled later) the new value is added inside the same section
-with a dated sub-bullet so the original snapshot stays auditable.
+1. **Change log** — a chronological log of *deltas* only (what improved,
+   what regressed, what was a no-op, what is still pending). Full
+   per-run snapshots live in the raw JSON under
+   `results/run_<id>/experiment_<N>/artifacts/`.
+2. **Final results (core)** — the *latest* measured number per cell for
+   every core variant. Cells that have not yet been measured at the
+   current evaluation protocol are marked `pending`.
+3. **Bonus experiments** — placeholder table for the stretch goals
+   defined under `docs/tasks/bonus/`. All cells `pending` until those
+   experiments run.
 
-**Column legend.** `chrF` / `BLEU` from `sacrebleu` on FLORES-200 devtest
-(1012 sentences per direction); `WCM` = Uyghur classification accuracy on
-`hfl/wcm-v2 → minority/ug.txt` (300 rows); `C4 PPL` = English perplexity on
-`allenai/c4/en` validation (1k samples). Variants:
+## Variants
 
-- `qwen_zs` — Qwen2.5-7B-Instruct, zero-shot (no adapter).
-- `llama_zs` — LLaMA-3.1-8B-Instruct, zero-shot.
-- `qwen_ft` — Qwen2.5-7B-Instruct + the run's LoRA adapter.
+- `qwen_zeroshot` — Qwen2.5-7B-Instruct, zero-shot (no adapter), chat template.
+- `llama_zeroshot` — LLaMA-3.1-8B-Instruct, zero-shot, chat template.
+- `qwen_finetuned` — Qwen2.5-7B-Instruct + the run's QLoRA adapter (Mix-20).
+- `cute_llama_p` — CMLI-NLP/CUTE-Llama, `CUTE-Llama-Parallel` subfolder, fp16, base-LM few-shot continuation prompt.
 
----
+## Metrics
 
-## 2026-05-24 — run_20260524_020432 (Slurm job 2650)
-
-**Setup.** First successful full pipeline run. Qwen2.5-7B-Instruct QLoRA
-Mix-20 on 100k CUTE-P pairs + 50k FLAN rows. `lora_rank=16`, `α=32`,
-`lr=2e-4`, `bs=4 × grad_accum=4 = 16`, `max_seq_length=512`,
-`epochs=3` planned. Packing + FlashAttention 2 enabled.
-`early_stopping_patience=3` over `eval_steps=50`.
-
-**Training health.**
-
-- Preprocess: `num_train=32670`, `num_test=1717` (pair-level split).
-- Stopped at **step 1550 / 3138 (~1.48 epochs)** by `EarlyStoppingCallback`
-  (not a crash).
-- In-loop `eval_loss`: **2.159 → ~1.523** (best). `final/` adapter is the
-  best checkpoint via `load_best_model_at_end=True`.
-- Last train loss at stop: ~1.721 (`epoch≈1.48`).
-
-**External benchmarks** (from `eval_summary.json`):
-
-| Variant     | FLORES EN→UG chrF | FLORES EN→UG BLEU | FLORES UG→EN chrF | FLORES UG→EN BLEU | WCM Uyghur acc. | C4 EN PPL |
-|-------------|-------------------|-------------------|-------------------|-------------------|-----------------|-----------|
-| qwen_zs     | 9.96              | 0.23              | **30.29**         | 4.09              | n/a (ERROR)     | 16.59     |
-| llama_zs    | 0.84              | 0.45              | 4.71              | 1.36              | n/a (ERROR)     | 13.69     |
-| **qwen_ft** | **14.18**         | 0.04              | 9.38              | 0.14              | n/a (ERROR)     | 16.17     |
-
-- **2026-05-26 WCM/eval backfill (Slurm job 2715).** Re-ran `--experiment 1 --mode eval`
-  on this run id (resumed adapter `checkpoints/qwen_mix20/final`) with the fixed
-  WCM loader (`minority/ug.txt` via `hf_hub_download`). FLORES EN→UG chrF / UG→EN
-  chrF and C4 PPL reproduced **byte-identically** (deterministic `do_sample=False`
-  decoding holds). Only new cell: **WCM `qwen_ft` accuracy = 7.33 %** (22/300)
-  with the *legacy* free-form prompt + substring match — known broken, see the
-  next sub-bullet for the post-fix number.
-  *Caveat — WCM-v2 is methodologically broken at this protocol.* `minority/ug.txt`
-  is heavily imbalanced (256/300 rows = label `1`, i.e. 85.3 % majority-class
-  baseline; paper reports CUTE-Llama-P at 87.0 %). All three of our variants land
-  **below the 16.7 % random baseline**, i.e. the chat-template free-form prompt
-  in `shared/evaluation._classify_uyghur` is making the model emit free-form text
-  that incidentally contains a digit, not actually pick a label. Δ +1.0 % between
-  `qwen_ft` and `qwen_zs` is noise. Prompt + scoring fix tracked in
-  `docs/tasks/02_wcm_v2_reevaluation.md`.
-
-- **2026-05-26 post-fix re-eval (Slurm job 2744).** Re-ran
-  `--experiment 1 --mode eval --run-id 20260524_020432` against the **same**
-  adapter with both fixes active: WCM constrained log-likelihood scoring
-  (commit `6d4197c`) and FLORES chat-marker stop-token + post-decode trim
-  (commit `da8e8d8`). Results:
-
-  | Metric | Pre-fix (May 24) | Post-fix (Slurm 2744) | Δ |
-  |---|---|---|---|
-  | FLORES EN→UG chrF | 14.18  | **14.1762** | ~0.00 |
-  | FLORES EN→UG BLEU | 0.04   | **0.0354**  | ~0.00 |
-  | FLORES UG→EN chrF | 9.38   | **9.385**   | +0.00 |
-  | FLORES UG→EN BLEU | 0.14   | **0.1387**  | ~0.00 |
-  | WCM `qwen_ft` accuracy | 7.33 % (free-form) | **21.00 % (63/300)** | +13.7 pp |
-  | C4 EN PPL | 16.17 | **16.1667** | ~0.00 |
-
-  Two findings — **both important and one is a hypothesis-falsifier:**
-
-  1. **FLORES chrF / BLEU are byte-identical.** The chat-marker stop-token
-     + hard-trim path landed in `da8e8d8` had **zero measurable effect**
-     on the corpus chrF in either direction. Mechanistically that means
-     `skip_special_tokens=True` was already stripping the *token-id*
-     form of `<|im_end|>` cleanly on this adapter, and the adapter is
-     *not* emitting the *literal-string* form `"<|im_end|>"` as plain
-     text the way we hypothesised in `PROJECT_REFINEMENT.md` §13.
-     **Conclusion: the UG→EN regression 30.29 → 9.38 is genuine**, not a
-     decoding artifact — Task 03 §Step 4 success criterion lands in the
-     "OR the analysis concludes the regression is genuine" branch.
-     The stop-token fix is kept as a defensive measure (it would catch
-     the failure mode if a future adapter learns it) but is not the
-     explanation for what we observed.
-  2. **WCM `qwen_ft` rises from 7.33 % → 21.00 %.** Switching from
-     free-form generation + substring match to constrained log-likelihood
-     scoring quadruples accuracy. The model is now always returning one
-     of the legal labels (no fallback). 21 % is still well below the
-     85.3 % majority floor, so the FT model isn't refusing — it is
-     producing a non-trivial label distribution that is only marginally
-     above the 16.7 % random baseline on the 6-class task. WCM-v2 is
-     no longer methodologically broken; what remains is a real
-     "the chat-template Uyghur prompt does not anchor the model on the
-     right label" finding. Whether this is a fine-tune-side or
-     prompt-side effect is now answerable by repeating the same eval on
-     `qwen_zeroshot` / `llama_zeroshot` with the constrained-LL path
-     (Task 02 step 3 — outstanding).
-
-  C4 PPL byte-identical confirms determinism. The April-style
-  "no fine-tune row in this section yet" caveat in the next-section
-  bullet is superseded by the table above; the canonical
-  `qwen_finetuned` row for `run_20260524_020432` is this sub-bullet.
-
-**Analysis.**
-
-- **EN→UG is the gain direction.** Fine-tuning lifts chrF by **+4.22**
-  over zero-shot Qwen (9.96 → 14.18); zero-shot LLaMA stays at chrF ~0.84
-  (essentially "no Uyghur"), confirming Qwen's UG tokenization head-start.
-- **UG→EN regresses sharply** (chrF 30.29 → 9.38). Mix-20 over-fits the
-  *generate-Uyghur* direction; the EN-side decoder is partly forgotten
-  despite the 20 % FLAN buffer. The C4 PPL gap is small (16.59 → 16.17),
-  so the regression is task-shaped, not catastrophic-forgetting-shaped —
-  more likely prompt template / stop-token mismatch on UG→EN. Worth
-  re-checking decoding before retraining.
-- **BLEU is uniformly tiny.** chrF (character n-gram F-score) is the
-  right primary metric for low-resource Uyghur where token-level BLEU is
-  near zero for everyone (including the zero-shot baseline). We report
-  both but interpret chrF.
-- **WCM-v2 missing.** Loader called `load_dataset("hfl/wcm-v2",
-  split="test")`, which returns the Chinese parquet with a single `text`
-  column. Fix applied (load `minority/ug.txt` via `hf_hub_download`); a
-  re-evaluation will backfill the WCM column in this section.
-- **Early stop at ~1.5 epochs** is reasonable given the loss curve was
-  still trending down very slowly; a longer-patience run is a candidate
-  for the next iteration once decoding for UG→EN is sanity-checked.
+- **FLORES EN↔UG chrF / BLEU** — `sacrebleu.corpus_chrf` / `corpus_bleu` on the
+  FLORES+ devtest split (1012 sentences per direction), id-joined across
+  `eng_Latn` ↔ `uig_Arab`.
+- **WCM Uyghur acc.** — accuracy on `hfl/wcm-v2 → minority/ug.txt` (300 rows,
+  6 labels). Predicted by constrained log-likelihood scoring over the
+  candidate label set (`shared/evaluation._classify_uyghur`).
+  Majority-class floor on this file = **85.3 %** (256 of 300 rows = label
+  `1`); random baseline = 16.7 %.
+- **C4 EN PPL** — held-out English perplexity on `allenai/c4/en` validation,
+  1 000 samples streamed. Catastrophic-forgetting check.
 
 ---
 
-## 2026-05-26 — run_20260525_143722 (Slurm job 2714)
+## 1. Change log (deltas only)
 
-**Setup.** First clean **experiment-0-only** zero-shot eval after the
-exp-0 / exp-1 split landed (`docs/PROJECT_REFINEMENT.md` §12). No
-training, no adapter loaded. Evaluates `qwen_zeroshot` + `llama_zeroshot`
-on the same external benchmarks as exp 1 (FLORES+ devtest EN↔UG,
-WCM-v2 Uyghur `minority/ug.txt`, C4 EN PPL on 1k samples). Replaces the
-legacy combined eval in `run_20260524_020432` for the zero-shot rows.
+### 2026-05-24 — `run_20260524_020432` (Slurm 2650)
 
-**External benchmarks** (from `experiment_0/artifacts/eval_summary.json`):
+> First successful full pipeline run. Qwen2.5-7B QLoRA Mix-20 on 100 k
+> CUTE-P pairs + 50 k FLAN; early-stopped at step 1 550 / 3 138 (≈ 1.48
+> epochs); best `eval_loss` 1.523.
 
-| Variant  | FLORES EN→UG chrF | FLORES EN→UG BLEU | FLORES UG→EN chrF | FLORES UG→EN BLEU | WCM Uyghur acc. | C4 EN PPL |
-|----------|-------------------|-------------------|-------------------|-------------------|-----------------|-----------|
-| qwen_zs  | 9.96              | 0.23              | **30.29**         | 4.09              | 6.33 % (19/300) | 16.59     |
-| llama_zs | 0.84              | 0.45              | 4.71              | 1.36              | 0.67 % (2/300)  | **13.69** |
+- **+** Established baseline cells for `qwen_zeroshot`, `llama_zeroshot`,
+  and the first `qwen_finetuned` row.
+- **+** EN→UG chrF: `qwen_finetuned` **14.18** vs `qwen_zeroshot` 9.96
+  → **+4.22 chrF** absolute gain.
+- **−** UG→EN chrF: `qwen_finetuned` **9.38** vs `qwen_zeroshot` 30.29
+  → **−20.91 chrF** regression. C4 PPL only 16.59 → 16.17 (+0.4) — too
+  small for catastrophic forgetting; flagged for decoding investigation
+  (Task 03).
+- **n/a** WCM `ERROR` for all three variants. Loader called
+  `load_dataset("hfl/wcm-v2", split="test")` which returned the Chinese
+  parquet with no `label` column.
 
-**Analysis.**
+### 2026-05-26 — `run_20260525_143722` (Slurm 2714) — exp-0 isolation re-run
 
-- **FLORES + C4 PPL match the 2026-05-24 combined-run cells to four
-  decimals** — same models, same prompts, deterministic decoding.
-  Confirms the exp-0/exp-1 refactor introduced no eval drift; the
-  zero-shot baseline is now produced by experiment 0 alone and can be
-  pinned for the report.
-- **WCM-v2 numbers now populate without `ERROR`**, but the absolute
-  values are not informative: `minority/ug.txt` is 85.3 % majority-class
-  `1`; both zero-shot variants score *below random* (16.7 %). The fix is
-  not in the loader (loader is correct, returns 300 rows × `text`/`label`)
-  but in `_classify_uyghur` — it uses free-form generation + substring
-  matching, which can't return a constrained label. Tracked in
-  `docs/tasks/02_wcm_v2_reevaluation.md` (scope extended to also fix the
-  prompt + scoring path).
-- **No fine-tune row in this run.** `qwen_ft` lives in the
-  `run_20260524_020432` section above; the 2026-05-26 sub-bullet there
-  is the canonical place for the back-filled `qwen_ft` numbers.
-- **Outstanding gap before the minimum-results comparison can ship:**
-  Task 01 (CUTE-Llama-P few-shot baseline) still has no run dir.
-  Without it the FT-vs-CUTE-Llama-P column of the consolidated table
-  (`docs/tasks/04_consolidated_results_table.md`) is missing.
+> No training. First clean experiment-0-only zero-shot eval after the
+> exp-0 / exp-1 split landed (`PROJECT_REFINEMENT.md` §12).
+
+- **=** FLORES + C4 PPL for `qwen_zeroshot` / `llama_zeroshot` reproduced
+  byte-identically against the May-24 cells → confirms determinism +
+  zero eval-pipeline drift from the refactor.
+- **+** WCM cells populate without `ERROR` (loader fixed to load
+  `minority/ug.txt` via `hf_hub_download`).
+- **−** But WCM accuracy is **below random** (`qwen_zeroshot` 6.33 %,
+  `llama_zeroshot` 0.67 %). Diagnosed: `_classify_uyghur` used
+  free-form generation + substring match — cannot return a constrained
+  label. Scoring fix tracked in `docs/tasks/02_wcm_v2_reevaluation.md`.
+
+### 2026-05-26 — Slurm 2715 WCM backfill on `run_20260524_020432`
+
+- **+** `qwen_finetuned` WCM cell populates: **7.33 %** (22 / 300, free-form
+  scoring). Below random — same protocol bug as the 2714 zero-shot run.
+
+### 2026-05-26 — Slurm 2744 post-fix re-eval on `run_20260524_020432`
+
+> Same adapter, two fixes active: WCM constrained log-likelihood scoring
+> (commit `6d4197c`) + FLORES chat-marker stop-token list + post-decode
+> trim (commit `da8e8d8`).
+
+- **=** FLORES EN→UG / UG→EN chrF and BLEU **byte-identical** to the May-24
+  pre-fix numbers (14.1762 / 9.385). **The chat-marker decoding fix had
+  zero measurable effect on this adapter** → falsifies the "leak causes
+  the UG→EN regression" hypothesis recorded in `PROJECT_REFINEMENT.md`
+  §13. **The UG→EN regression 30.29 → 9.38 is genuine** — a real Mix-20
+  over-fitting effect on the generate-English direction. The stop-token
+  fix is kept as a defensive measure.
+- **+** WCM `qwen_finetuned` **7.33 % → 21.00 %** (63 / 300) via
+  constrained-LL scoring. ×2.9 lift, model always returns a legal label.
+  Still well below the 85.3 % majority floor — substantive
+  prompt-anchoring / model-side finding, no longer a methodology bug.
+- **=** C4 PPL byte-identical → determinism confirmed.
+
+### 2026-05-26 — Slurm 2745 / `run_20260526_171100` (CUTE-Llama-P) — in flight, will time out
+
+- Experiment 2 first run; reached `[eval] 50/1012` on EN→UG at the time
+  of the last log sync. fp16 7B + eager attention + `repetition_penalty`
+  is slower than budgeted (~30 s/sentence). Status `evaluating`; the 6 h
+  walltime will not be enough. **No artifacts written yet.** Re-submit
+  required with `--time 1-00:00:00`.
+
+### Pending re-runs
+
+- `qwen_zeroshot` + `llama_zeroshot` WCM with the constrained-LL path
+  (Task 02 step 3) — code is committed, no Slurm job submitted yet.
+  Command: `python3 scripts/push.py --server ju-compute-server
+  --experiment 0 --mode eval --new-run` (`--time` auto-picks `6:00:00`).
+- `cute_llama_p` full eval (Task 01) — re-submit with `--time 1-00:00:00`.
+
+---
+
+## 2. Final results — core experiments
+
+Latest measured number per cell. `pending` = the numerical value at the
+current protocol has not yet been written by a successful Slurm run;
+the source run for each populated cell is noted under the table.
+
+| Variant | FLORES EN→UG chrF | EN→UG BLEU | FLORES UG→EN chrF | UG→EN BLEU | WCM Uyghur acc. | C4 EN PPL |
+|---------|-------------------|------------|-------------------|------------|------------------|-----------|
+| `qwen_zeroshot`   | 9.96      | 0.23   | **30.29** | 4.09   | 6.33 % *(pending re-eval — free-form scoring)* | 16.59 |
+| `llama_zeroshot`  | 0.84      | 0.45   | 4.71      | 1.36   | 0.67 % *(pending re-eval — free-form scoring)* | **13.69** |
+| `qwen_finetuned`  | **14.1762** | 0.0354 | 9.385   | 0.1387 | **21.00 %** (63 / 300, constrained-LL) | 16.1667 |
+| `cute_llama_p`    | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+
+Sources for populated cells (latest measurement per metric):
+
+| Variant | FLORES rows | WCM row | C4 PPL row |
+|---|---|---|---|
+| `qwen_zeroshot`  | `run_20260525_143722` (Slurm 2714) | `run_20260525_143722` (Slurm 2714, free-form — *to be superseded*) | `run_20260525_143722` |
+| `llama_zeroshot` | `run_20260525_143722`              | `run_20260525_143722` (free-form — *to be superseded*)              | `run_20260525_143722` |
+| `qwen_finetuned` | `run_20260524_020432` (Slurm 2744) | `run_20260524_020432` (Slurm 2744, constrained-LL)                   | `run_20260524_020432` (Slurm 2744) |
+| `cute_llama_p`   | n/a (Slurm 2745 timed out)         | n/a                                                                  | n/a |
+
+### Analysis (current best estimate)
+
+- **EN→UG: fine-tuning works.** `qwen_finetuned` reaches **14.18 chrF**,
+  +4.22 over `qwen_zeroshot` (9.96) and >13 chrF over `llama_zeroshot`
+  (0.84). The pre-registered **Minimum** criterion (fine-tuned beats
+  zero-shot in ≥1 direction) is met. The pre-registered **Target**
+  criterion (+5 chrF in *both* directions) is not — see UG→EN below.
+- **UG→EN: real Mix-20 over-fitting, not a decoding artifact.**
+  `qwen_finetuned` drops to **9.39 chrF** vs `qwen_zeroshot` 30.29. The
+  May-26 post-fix re-eval (Slurm 2744) confirmed the chat-marker fix
+  was a no-op on this adapter — the regression is genuine. Mix-20 over-
+  anchors on the generate-Uyghur direction at the cost of generate-
+  English fluency, despite the 20 % FLAN buffer. C4 PPL gap is only
+  +0.4 (16.59 → 16.17), so this is task-shaped, not catastrophic-
+  forgetting-shaped. Reported as the headline finding rather than
+  engineered away.
+- **WCM: constrained scoring lifts `qwen_finetuned` to 21 %**, still
+  far below the 85.3 % majority floor. The model now always returns a
+  legal label (scoring path is sound); the gap to majority is a real
+  "the chat-template prompt does not anchor the Uyghur classifier on
+  the right label" finding. The zero-shot WCM cells are still the
+  pre-fix free-form numbers and **must be re-run with constrained-LL
+  scoring** before any qwen_zeroshot vs qwen_finetuned WCM Δ is
+  reported in the paper. Command listed in §1 *Pending re-runs*.
+- **BLEU is uniformly tiny on FLORES.** chrF is the right primary
+  metric for low-resource Uyghur — token-level BLEU is near zero for
+  every variant including the zero-shot baselines. Reported but not
+  interpreted.
+- **C4 PPL is stable** (16.59 → 16.17 across fine-tuning;
+  `llama_zeroshot` lower at 13.69 reflects the LLaMA tokenizer's English
+  efficiency, unrelated to Uyghur training). No catastrophic forgetting.
+
+### Outstanding before the core comparison is complete
+
+1. **`cute_llama_p` row.** Required for the CUTE-Llama-P comparison
+   that motivates the project (`docs/01_prob_describtion.md` §1.5).
+   Blocked on a successful experiment-2 Slurm run (re-submit with
+   `--time 1-00:00:00`).
+2. **`qwen_zeroshot` / `llama_zeroshot` WCM under constrained-LL
+   scoring.** Without this, the WCM column mixes two different scoring
+   protocols and the Δ between `qwen_zeroshot` and `qwen_finetuned` is
+   not interpretable.
+3. **(Optional) per-direction chrF confidence intervals via sacrebleu
+   `--paired-bs`.** Currently the eval pipeline reports point estimates
+   only; tracked in `docs/04_planned_evaluation.md` §4.3.
+
+---
+
+## 3. Bonus experiments (stretch — placeholders)
+
+Stretch goals from `docs/tasks/bonus/`. All cells `pending` until the
+corresponding Slurm runs land. None of these are required for the
+**Core** evaluation in §2.
+
+| Variant | Source task | FLORES EN→UG chrF | FLORES UG→EN chrF | WCM Uyghur acc. | C4 EN PPL | Status |
+|---|---|---|---|---|---|---|
+| `llama_finetuned` (Mix-20) | `bonus/01_experiment_3_llama_mix20_finetune.md` | _pending_ | _pending_ | _pending_ | _pending_ | not started |
+| `qwen_finetuned_mix0`      | `bonus/02_qwen_mix_ablation.md`                  | _pending_ | _pending_ | _pending_ | _pending_ | not started |
+| `qwen_finetuned_mix10`     | `bonus/02_qwen_mix_ablation.md`                  | _pending_ | _pending_ | _pending_ | _pending_ | not started |
+| `qwen_finetuned_mix50`     | `bonus/02_qwen_mix_ablation.md`                  | _pending_ | _pending_ | _pending_ | _pending_ | not started |
+| `qwen_zeroshot_5shot`      | `bonus/04_qwen_5shot_baseline.md`                | _pending_ | _pending_ | _pending_ | _pending_ | not started |
+
+### MiLiC-Eval (separate benchmark suite — deferred to final report)
+
+9-task bilingual MiLiC-Eval (`docs/tasks/bonus/03_milic_eval.md`). Not
+reported in the same table as FLORES / WCM / C4; will be added as its
+own block here once any of the core variants is evaluated against it.
+
+| Variant | MiLiC tasks (9) | Status |
+|---|---|---|
+| `qwen_zeroshot`   | _pending_ | not started |
+| `qwen_finetuned`  | _pending_ | not started |
+| `cute_llama_p`    | _pending_ | not started |
 
 ---
 
 <!--
-APPEND NEW SECTIONS BELOW THIS LINE — chronological order, never rewrite
-older snapshots. Use this template:
+APPEND DELTAS BELOW THIS LINE — chronological. Each entry is a short
+bullet list of what changed (+ / − / =) for which variant / cell, plus
+the source `run_<id>` and Slurm job id. Full numerical snapshots live
+in the run's `artifacts/eval_summary.json`; do not mirror them here.
 
-## YYYY-MM-DD — run_<id> (Slurm job <jobid>)
+When a new measurement supersedes a cell in §2 *Final results — core
+experiments*, update that table in the SAME commit. Do not rewrite
+older change-log entries.
 
-**Setup.** <delta from previous run: config/code changes that matter>
+Template:
 
-**Training health.** <steps, eval_loss best, early stop, etc.>
+### YYYY-MM-DD — run_<id> (Slurm <jobid>)
 
-**External benchmarks.**
-
-| Variant  | FLORES EN→UG chrF | … | WCM acc. | C4 PPL |
-|----------|-------------------|---|----------|--------|
-| qwen_zs  | …                 | … | …        | …      |
-| llama_zs | …                 | … | …        | …      |
-| qwen_ft  | …                 | … | …        | …      |
-
-**Analysis.** <2–6 bullets focused on how each cell moved vs the
-previous section and what we believe caused the change>
+- **+/=/−** <variant>.<metric>: <old> → <new> (<source artifact>).
+- Notes / caveats.
 -->
