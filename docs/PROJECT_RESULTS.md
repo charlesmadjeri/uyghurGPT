@@ -103,13 +103,19 @@ the numbers moved**. It has three sections:
   walltime will not be enough. **No artifacts written yet.** Re-submit
   required with `--time 1-00:00:00`.
 
-### Pending re-runs
+### Pending re-runs (in flight)
 
-- `qwen_zeroshot` + `llama_zeroshot` WCM with the constrained-LL path
-  (Task 02 step 3) — code is committed, no Slurm job submitted yet.
-  Command: `python3 scripts/push.py --server ju-compute-server
-  --experiment 0 --mode eval --new-run` (`--time` auto-picks `6:00:00`).
-- `cute_llama_p` full eval (Task 01) — re-submit with `--time 1-00:00:00`.
+- `qwen_zeroshot` + `llama_zeroshot` WCM under constrained-LL — **Slurm
+  2749 / `run_20260526_223852`** (full exp-0 re-eval; FLORES + C4 are
+  re-computed but expected byte-identical, the new information is the
+  WCM column). Submitted with `push.py`'s default `--time 6:00:00`.
+- `cute_llama_p` full eval (Task 01) — **Slurm 2750 /
+  `run_20260526_222254`** (re-submitted with `--time 1-00:00:00` after
+  Slurm 2745 timed out at 6 h on `[eval] 50/1012` EN→UG).
+- *(Deferred, not on the cluster yet — see `TODO.md`)* UG→EN
+  per-sentence failure-mode diagnostic (`scripts/debug_ug2en.py`).
+  Waiting for a queue slot to free; informational, not on the critical
+  path for the §2 table.
 
 ---
 
