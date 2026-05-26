@@ -4,6 +4,7 @@ CLI entrypoint:
   --mode preflight              Day-1 sanity checks (shared/preflight.py)
   --experiment 0 --mode eval       Zero-shot baselines (experiments/experiment_0/)
   --experiment 1 --mode <stage>  Core Qwen Mix-20 QLoRA (experiments/experiment_1/)
+  --experiment 2 --mode eval       CUTE-Llama-P few-shot baseline (experiments/experiment_2/)
 
 Stages for experiments: preprocess | train | eval | all
 
@@ -23,6 +24,7 @@ def parse_args():
         help=(
             "Experiment id. 0 = zero-shot baselines (qwen+llama, eval only). "
             "1 = core Qwen Mix-20 QLoRA (evaluates fine-tuned variant only). "
+            "2 = CUTE-Llama-P few-shot baseline (eval only). "
             "Omit for legacy top-level modes."
         ),
     )
@@ -96,6 +98,11 @@ def run_experiment(args):
 
         exp1.run(args)
         return
+    if args.experiment == 2:
+        from experiments.experiment_2 import run as exp2
+
+        exp2.run(args)
+        return
     print(f"Unknown experiment id: {args.experiment}", file=sys.stderr)
     sys.exit(2)
 
@@ -112,8 +119,9 @@ def main():
         return
 
     print(
-        "No --experiment set. Use --experiment 0 (zero-shot eval) or "
-        "--experiment 1 (fine-tune pipeline), or --mode preflight for Day-1 checks.",
+        "No --experiment set. Use --experiment 0 (zero-shot eval), "
+        "--experiment 1 (fine-tune pipeline), --experiment 2 (CUTE-Llama-P "
+        "few-shot baseline), or --mode preflight for Day-1 checks.",
         file=sys.stderr,
     )
     sys.exit(2)

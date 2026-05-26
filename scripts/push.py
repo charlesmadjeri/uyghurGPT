@@ -39,8 +39,10 @@ def main():
             "Slurm walltime. If unset, defaults are derived from the "
             "observed wall time of run_20260524_020432 (+50%% margin): "
             "experiment 0 = 6:00:00 (~3h36m observed), experiment 1 = "
-            "1-00:00:00 (~15h52m observed). Priority partition cap is "
-            "5-00:00:00; raise only if you have evidence the run will exceed."
+            "1-00:00:00 (~15h52m observed), experiment 2 = 6:00:00 "
+            "(same shape as exp 0; first run will calibrate). Priority "
+            "partition cap is 5-00:00:00; raise only if you have evidence "
+            "the run will exceed."
         ),
     )
     parser.add_argument("--cpus", type=int, default=8)
@@ -78,7 +80,8 @@ def main():
         default=1,
         help=(
             "Experiment id for main.py (0 = zero-shot eval only; "
-            "1 = core Qwen Mix-20 preprocess/train/eval)"
+            "1 = core Qwen Mix-20 preprocess/train/eval; "
+            "2 = CUTE-Llama-P few-shot baseline eval)"
         ),
     )
     parser.add_argument(
@@ -101,6 +104,10 @@ def main():
         default_time_by_experiment = {
             0: "6:00:00",
             1: "1-00:00:00",
+            # Experiment 2 is eval-only (FLORES devtest 1012 × 2 + WCM 300 +
+            # C4 PPL 1000) on a fp16 7B base LM. Same shape as exp 0 so we
+            # reuse its 6 h budget; tighten after the first observed wall.
+            2: "6:00:00",
         }
         args.time = default_time_by_experiment.get(args.experiment, "1-00:00:00")
         print(info(f"--time not set; using default {args.time} for experiment {args.experiment}"))
