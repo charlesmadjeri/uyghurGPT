@@ -396,6 +396,37 @@ regression was decoding and training is correct. If it does **not**, the
 regression is a real Mix-20 over-fitting effect and is reported as the
 headline finding rather than engineered away.
 
+### Empirical update (2026-05-26 re-eval, Slurm 2744)
+
+The post-fix re-eval reproduced FLORES EN→UG chrF / UG→EN chrF /
+C4 PPL **byte-identically** to the May-24 pre-fix numbers (see
+`PROJECT_RESULTS.md` 2026-05-26 sub-bullet under
+`run_20260524_020432`). The chat-marker fix had **zero measurable
+effect** on translation quality. Concretely this falsifies the
+leak-causes-regression part of the hypothesis above:
+
+- `skip_special_tokens=True` was already stripping the *token-id*
+  form of `<|im_end|>`. The adapter is *not* emitting the
+  *literal-string* form `"<|im_end|>"` as plain text the way we
+  hypothesised, so there is nothing for the post-decode trim to
+  remove on this run.
+- The new stop-token list still removes the failure mode as a
+  potential cause of future regressions, but for **this** adapter it
+  was a no-op.
+
+The UG→EN regression 30.29 → 9.38 is therefore **genuine** — a real
+Mix-20 over-fitting effect on the generate-English direction — and is
+reported as the headline finding rather than engineered away (Task 03
+§Step 4 success criterion, "OR the analysis concludes the regression
+is genuine" branch).
+
+The WCM half of §13 is **not** affected by this update: switching to
+constrained log-likelihood scoring raised `qwen_ft` accuracy from
+7.33 % to 21.00 % on the same adapter (×2.9). That fix was real and
+landed as documented; what remains is a model-side / prompt-side gap
+between 21 % and the 85.3 % majority floor, which is no longer a
+methodology bug but a substantive finding.
+
 ### What the test suite now guarantees
 
 - **No more silent chat-marker leaks**:

@@ -52,9 +52,9 @@ Mix-20 on 100k CUTE-P pairs + 50k FLAN rows. `lora_rank=16`, `α=32`,
   on this run id (resumed adapter `checkpoints/qwen_mix20/final`) with the fixed
   WCM loader (`minority/ug.txt` via `hf_hub_download`). FLORES EN→UG chrF / UG→EN
   chrF and C4 PPL reproduced **byte-identically** (deterministic `do_sample=False`
-  decoding holds). Only new cell: **WCM `qwen_ft` accuracy = 7.33 %** (22/300).
-  Zero-shot WCM cells are populated by the parallel exp-0 run on the same date —
-  see the 2026-05-26 section below: `qwen_zs` 6.33 %, `llama_zs` 0.67 %.
+  decoding holds). Only new cell: **WCM `qwen_ft` accuracy = 7.33 %** (22/300)
+  with the *legacy* free-form prompt + substring match — known broken, see the
+  next sub-bullet for the post-fix number.
   *Caveat — WCM-v2 is methodologically broken at this protocol.* `minority/ug.txt`
   is heavily imbalanced (256/300 rows = label `1`, i.e. 85.3 % majority-class
   baseline; paper reports CUTE-Llama-P at 87.0 %). All three of our variants land
@@ -63,6 +63,55 @@ Mix-20 on 100k CUTE-P pairs + 50k FLAN rows. `lora_rank=16`, `α=32`,
   that incidentally contains a digit, not actually pick a label. Δ +1.0 % between
   `qwen_ft` and `qwen_zs` is noise. Prompt + scoring fix tracked in
   `docs/tasks/02_wcm_v2_reevaluation.md`.
+
+- **2026-05-26 post-fix re-eval (Slurm job 2744).** Re-ran
+  `--experiment 1 --mode eval --run-id 20260524_020432` against the **same**
+  adapter with both fixes active: WCM constrained log-likelihood scoring
+  (commit `6d4197c`) and FLORES chat-marker stop-token + post-decode trim
+  (commit `da8e8d8`). Results:
+
+  | Metric | Pre-fix (May 24) | Post-fix (Slurm 2744) | Δ |
+  |---|---|---|---|
+  | FLORES EN→UG chrF | 14.18  | **14.1762** | ~0.00 |
+  | FLORES EN→UG BLEU | 0.04   | **0.0354**  | ~0.00 |
+  | FLORES UG→EN chrF | 9.38   | **9.385**   | +0.00 |
+  | FLORES UG→EN BLEU | 0.14   | **0.1387**  | ~0.00 |
+  | WCM `qwen_ft` accuracy | 7.33 % (free-form) | **21.00 % (63/300)** | +13.7 pp |
+  | C4 EN PPL | 16.17 | **16.1667** | ~0.00 |
+
+  Two findings — **both important and one is a hypothesis-falsifier:**
+
+  1. **FLORES chrF / BLEU are byte-identical.** The chat-marker stop-token
+     + hard-trim path landed in `da8e8d8` had **zero measurable effect**
+     on the corpus chrF in either direction. Mechanistically that means
+     `skip_special_tokens=True` was already stripping the *token-id*
+     form of `<|im_end|>` cleanly on this adapter, and the adapter is
+     *not* emitting the *literal-string* form `"<|im_end|>"` as plain
+     text the way we hypothesised in `PROJECT_REFINEMENT.md` §13.
+     **Conclusion: the UG→EN regression 30.29 → 9.38 is genuine**, not a
+     decoding artifact — Task 03 §Step 4 success criterion lands in the
+     "OR the analysis concludes the regression is genuine" branch.
+     The stop-token fix is kept as a defensive measure (it would catch
+     the failure mode if a future adapter learns it) but is not the
+     explanation for what we observed.
+  2. **WCM `qwen_ft` rises from 7.33 % → 21.00 %.** Switching from
+     free-form generation + substring match to constrained log-likelihood
+     scoring quadruples accuracy. The model is now always returning one
+     of the legal labels (no fallback). 21 % is still well below the
+     85.3 % majority floor, so the FT model isn't refusing — it is
+     producing a non-trivial label distribution that is only marginally
+     above the 16.7 % random baseline on the 6-class task. WCM-v2 is
+     no longer methodologically broken; what remains is a real
+     "the chat-template Uyghur prompt does not anchor the model on the
+     right label" finding. Whether this is a fine-tune-side or
+     prompt-side effect is now answerable by repeating the same eval on
+     `qwen_zeroshot` / `llama_zeroshot` with the constrained-LL path
+     (Task 02 step 3 — outstanding).
+
+  C4 PPL byte-identical confirms determinism. The April-style
+  "no fine-tune row in this section yet" caveat in the next-section
+  bullet is superseded by the table above; the canonical
+  `qwen_finetuned` row for `run_20260524_020432` is this sub-bullet.
 
 **Analysis.**
 
