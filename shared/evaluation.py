@@ -1,4 +1,11 @@
-"""FLORES-200, WCM-v2, and English perplexity evaluation (docs/PROJECT.md §Evaluation)."""
+"""FLORES-200, WCM-v2, and English perplexity evaluation (docs/PROJECT.md §Evaluation).
+
+Heavy ML deps (``sacrebleu``, ``datasets``, ``huggingface_hub``, ``peft``,
+``transformers``) are imported lazily inside the helpers that need them so
+that pure-CPU unit tests can exercise WCM scoring / prompt builders without
+installing the full eval stack. ``torch`` is imported at module load because
+the WCM scorer uses tensor operations and tests already require ``torch``.
+"""
 
 from __future__ import annotations
 
@@ -6,20 +13,8 @@ import math
 import os
 from pathlib import Path
 
-import sacrebleu
 import torch
-from datasets import Dataset, load_dataset
-from huggingface_hub import hf_hub_download
-from peft import PeftModel
-from transformers import AutoModelForCausalLM
 
-from shared.models import (
-    align_special_tokens,
-    bnb_config,
-    dtype_kwarg,
-    load_tokenizer,
-    model_id,
-)
 from utils.io import checkpoint_dir, write_eval_artifact, write_run_status
 
 FLORES_REPO = "openlanguagedata/flores_plus"
@@ -52,6 +47,17 @@ def _find_adapter_path(run_root: Path, model_label: str) -> Path | None:
 
 
 def load_eval_model(model_choice: str, adapter_path: Path | None = None):
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM
+
+    from shared.models import (
+        align_special_tokens,
+        bnb_config,
+        dtype_kwarg,
+        load_tokenizer,
+        model_id,
+    )
+
     mid = model_id(model_choice)
     quant = bnb_config()
     base = AutoModelForCausalLM.from_pretrained(
@@ -100,6 +106,8 @@ def generate_translation(model, tokenizer, source: str, src_lang: str, tgt_lang:
 
 
 def _corpus_scores(hypotheses: list[str], references: list[str]) -> dict:
+    import sacrebleu
+
     bleu = sacrebleu.corpus_bleu(hypotheses, [references])
     chrf = sacrebleu.corpus_chrf(hypotheses, [references])
     return {
@@ -116,6 +124,8 @@ def load_flores_pairs(max_samples: int | None = None) -> tuple[list[str], list[s
     so no dataset script is required (datasets >= 2.20 refuses scripts) and
     the same source/splits are used by the preflight check 5 sanity test.
     """
+    from datasets import load_dataset
+
     token = os.environ.get("HF_TOKEN")
     ds_en = load_dataset(FLORES_REPO, FLORES_EN_CODE, split=FLORES_SPLIT, token=token)
     ds_ug = load_dataset(FLORES_REPO, FLORES_UG_CODE, split=FLORES_SPLIT, token=token)
@@ -146,7 +156,9 @@ def eval_flores(model, tokenizer, max_samples: int | None = None) -> dict:
     }
 
 
-def _parse_wcm_tab_file(path: Path) -> Dataset:
+def _parse_wcm_tab_file(path: Path):
+    from datasets import Dataset
+
     rows: dict[str, list[str]] = {"text": [], "label": []}
     with path.open(encoding="utf-8") as fh:
         for line in fh:
@@ -165,6 +177,8 @@ def _parse_wcm_tab_file(path: Path) -> Dataset:
 
 def _load_wcm_dataset(max_samples: int | None):
     """Uyghur WCM-v2 eval uses minority/ug.txt (text\\tlabel), not HF test split."""
+    from huggingface_hub import hf_hub_download
+
     last_err: Exception | None = None
     repos = [r for r in WCM_CANDIDATES if r]
     if not repos:
@@ -199,39 +213,99 @@ def _wcm_columns(ds) -> tuple[str, str]:
     raise ValueError(f"Unrecognized WCM-v2 schema: {ds.column_names}")
 
 
-@torch.inference_mode()
-def _classify_uyghur(model, tokenizer, text: str, labels: list[str]) -> str:
+def _wcm_messages(
+    text: str,
+    labels: list[str],
+    exemplars: list[tuple[str, str]] | None = None,
+) -> list[dict]:
+    """Chat-template messages for WCM-v2 Uyghur classification.
+
+    The user turn ends with a literal ``Label:`` cue so the *next* token the
+    model is asked to predict is the label. ``_classify_uyghur`` then scores
+    each candidate label by its (joint) log-likelihood under teacher forcing
+    instead of generating freely, which guarantees the prediction is one of
+    ``labels`` and removes the substring-match fallback that produced the
+    below-chance numbers in ``run_20260525_143722`` (see
+    ``docs/PROJECT_RESULTS.md`` 2026-05-26 §Analysis).
+    """
     label_str = ", ".join(labels[:20])
-    messages = [
+    sections: list[str] = [
+        f"Classify the following Uyghur text. Reply with exactly one label "
+        f"from this set: {{{label_str}}}.",
+    ]
+    if exemplars:
+        sections.append("Examples:")
+        for ex_text, ex_label in exemplars:
+            sections.append(f"Text: {ex_text}\nLabel: {ex_label}")
+    sections.append(f"Text: {text}\nLabel:")
+    return [
         {
             "role": "system",
             "content": (
-                "You classify Uyghur text. Reply with exactly one label from the list."
+                "You classify Uyghur text. Reply with exactly one label "
+                "from the provided set."
             ),
         },
-        {
-            "role": "user",
-            "content": f"Labels: {label_str}\n\nUyghur text:\n{text}\n\nLabel:",
-        },
+        {"role": "user", "content": "\n\n".join(sections)},
     ]
+
+
+@torch.inference_mode()
+def _score_label_logprob(model, prompt_ids, label_ids) -> float:
+    """Joint log-likelihood of ``label_ids`` continuing ``prompt_ids``.
+
+    ``prompt_ids`` and ``label_ids`` are both ``[1, T]`` tensors already on
+    the model's device. Uses one forward pass over ``cat(prompt, label)``
+    and gathers the per-token log-softmax of the label positions.
+    """
+    full = torch.cat([prompt_ids, label_ids], dim=1)
+    out = model(input_ids=full)
+    plen = prompt_ids.shape[1]
+    n_label = label_ids.shape[1]
+    if n_label <= 0:
+        return float("-inf")
+    label_logits = out.logits[0, plen - 1 : plen - 1 + n_label]
+    log_probs = torch.log_softmax(label_logits, dim=-1)
+    target = full[0, plen : plen + n_label].unsqueeze(-1)
+    return log_probs.gather(-1, target).squeeze(-1).sum().item()
+
+
+@torch.inference_mode()
+def _classify_uyghur(
+    model,
+    tokenizer,
+    text: str,
+    labels: list[str],
+    exemplars: list[tuple[str, str]] | None = None,
+) -> str:
+    """Pick ``argmax_{l in labels} log P(l | chat_prompt(text))``.
+
+    Constrained classification: the return value is always one of ``labels``,
+    even if the model would otherwise emit free-form text. Deterministic
+    under fixed weights (no sampling, no temperature).
+    """
+    if not labels:
+        raise ValueError("labels must be a non-empty list")
+
+    messages = _wcm_messages(text, labels, exemplars)
     prompt = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
-    out = model.generate(
-        **inputs,
-        max_new_tokens=32,
-        do_sample=False,
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+    prompt_enc = tokenizer(
+        prompt, return_tensors="pt", truncation=True, max_length=2048
     )
-    pred = tokenizer.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True)
-    pred = pred.strip().split("\n")[0].strip()
-    for lab in labels:
-        if lab.lower() in pred.lower():
-            return lab
-    return pred
+    prompt_ids = prompt_enc["input_ids"].to(model.device)
+
+    best_label = labels[0]
+    best_score = float("-inf")
+    for label in labels:
+        label_enc = tokenizer(label, return_tensors="pt", add_special_tokens=False)
+        label_ids = label_enc["input_ids"].to(model.device)
+        score = _score_label_logprob(model, prompt_ids, label_ids)
+        if score > best_score:
+            best_score = score
+            best_label = label
+    return best_label
 
 
 def eval_wcm(model, tokenizer, max_samples: int | None = None) -> dict:
@@ -257,6 +331,8 @@ def eval_wcm(model, tokenizer, max_samples: int | None = None) -> dict:
 
 
 def load_c4_snippets(max_samples: int) -> list[str]:
+    from datasets import load_dataset
+
     ds = load_dataset(C4_REPO, C4_CONFIG, split="validation", streaming=True)
     texts = []
     for row in ds:
