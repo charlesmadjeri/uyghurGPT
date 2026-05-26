@@ -105,6 +105,15 @@ def load_eval_model(model_choice: str, adapter_path: Path | None = None):
     base.eval()
     tokenizer = load_tokenizer(model_choice)
     align_special_tokens(base, tokenizer)
+    # CUTE-Llama-P ships ``generation_config.max_length=100000`` baked into
+    # the checkpoint; transformers then warns once per ``model.generate``
+    # call (≈ 2024× per FLORES eval) about the latent ``max_length`` vs
+    # our explicit ``max_new_tokens``. Behaviour is correct either way —
+    # the warning is noise — so clear ``max_length`` at load time. Same
+    # for any other checkpoint that ships a stale default.
+    gen_cfg = getattr(base, "generation_config", None)
+    if gen_cfg is not None:
+        gen_cfg.max_length = None
     return base, tokenizer
 
 
