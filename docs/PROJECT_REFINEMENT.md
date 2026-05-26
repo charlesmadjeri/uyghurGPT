@@ -316,6 +316,102 @@ similar silent failure modes are identified.
 
 ---
 
+## 13. Decoding & Scoring Bugs Caught After `run_20260524_020432`
+
+### What changed
+
+The first full fine-tune run (`run_20260524_020432`, Slurm 2650, Mix-20)
+revealed two evaluation-side bugs that had **nothing to do with training**
+but were corrupting the reported numbers. Both are now fixed in
+`shared/evaluation.py` and locked in with unit tests:
+
+| Bug | Symptom in `run_20260524_020432` | Code patch | Test |
+|-----|-----------------------------------|------------|------|
+| **FLORES UG→EN chat-marker leak** | `qwen_finetuned` UG→EN chrF collapsed 30.29 → 9.38 while EN→UG *improved* 9.96 → 14.18. C4 PPL barely moved (16.59 → 16.17), so the regression was not catastrophic forgetting. | `generate_translation` now passes a *list* of stop ids (`eos_token_id=[<|endoftext|>, <|im_end|>, <|im_start|>, <|eot_id|>, <|start_header_id|>, <|end_header_id|>]`, transformers ≥ 4.45) and hard-trims the decoded string at the first occurrence of any chat-marker literal or fresh assistant/user/system turn header. Commit `da8e8d8`. | `tests/test_evaluation_translation.py` (11 tests). |
+| **WCM-v2 free-form prompt + substring match** | All three variants scored *below* the 16.7 % random baseline on a 6-class task where the majority-class floor is 85.3 %. Δ between `qwen_ft` (7.33 %) and `qwen_zs` (6.33 %) was noise. | `_classify_uyghur` switched from free-form generation + substring match to **constrained log-likelihood scoring** — for each candidate label, score `log P(label | chat_prompt(text))` and return the argmax. Always returns one of the supplied labels. Commit `6d4197c`. | `tests/test_evaluation_wcm.py` (9 tests). |
+
+### Why the FLORES leak only damaged one direction
+
+The fine-tuned adapter learned to emit chat-template scaffolding past the
+natural answer (a known failure mode when the response is short and the
+adapter is over-anchored on the template). The leak itself is
+**direction-agnostic** — the FT model bleeds chat markers in both
+directions — but the *chrF impact* is direction-asymmetric for three
+compounding reasons:
+
+1. **Script-mismatch hides the noise on EN→UG.** chrF is the F-score of
+   character n-gram overlap. The leaked content (`<|im_end|>`,
+   `\nassistant\n`, a fresh `user\n…\nassistant\n…` second turn) is all
+   ASCII / Latin. For EN→UG the reference is Uyghur Arabic script
+   (U+0600..U+06FF), so the leaked Latin n-grams do **not** dilute the
+   match between the Arabic translation portion of the hypothesis and
+   the Arabic reference. Precision drops slightly (denominator grows)
+   but the matched n-gram count is essentially unchanged. For UG→EN the
+   reference is English Latin, the *same script* as the noise — the
+   leaked `\nassistant\nuser\n…` n-grams compete directly with the
+   English reference's character n-grams and tank precision.
+2. **The FT model's leak rate is itself asymmetric.** Mix-20 is 80 %
+   CUTE-P pairs (`en2ug` + `ug2en`) + 20 % FLAN (EN-only, EN-output).
+   The adapter saw far more "output Uyghur under chat template" than
+   "output English under chat template", so it has cleaner internal
+   stop behaviour when producing Uyghur and is more likely to spill past
+   `<|im_end|>` when producing English. Zero-shot Qwen, having no such
+   imbalance, did *not* show the asymmetry — its UG→EN chrF stayed at
+   30.29.
+3. **Qwen exposes two end markers.** `<|endoftext|>` (151643) and
+   `<|im_end|>` (151645). The pre-fix code passed only
+   `tokenizer.eos_token_id` (= `<|endoftext|>`), so generation continued
+   on `<|im_end|>` until `max_new_tokens=256`, appending 100+ tokens of
+   garbage per sentence × 1012 FLORES sentences = the 21-point chrF
+   collapse we observed. Adding `<|im_end|>` to the stop set is the
+   primary fix; the post-decode trim catches the residual literal-text
+   variant the adapter learned to emit as normal text (because
+   `skip_special_tokens=True` strips token ids, not the literal string
+   `"<|im_end|>"`).
+
+### Why neither bug surfaced earlier
+
+- **WCM**: the loader called `load_dataset("hfl/wcm-v2", split="test")`,
+  which returned a Chinese parquet with no `label` column. All three
+  variants logged `WCM = ERROR`. The error was *visible* (and tracked
+  separately, see §12), so the prompt bug behind the error was masked —
+  it took fixing the loader to expose the scoring path failure.
+- **FLORES UG→EN**: the regression was visible in the chrF table but
+  initially read as a Mix-20 over-fitting artifact (anchor on
+  generate-Uyghur direction at the cost of English fluency). The clue
+  that ruled out forgetting was the C4 PPL gap of only +0.4
+  (`PROJECT_RESULTS.md` 2026-05-24 §Analysis, bullet 2): a 21-point
+  chrF collapse with a stable English language-model perplexity is a
+  decoding-shape signature, not a forgetting-shape signature.
+
+### Why we did not retrain
+
+The decoding fix is purely on the inference path; the adapter from
+`run_20260524_020432` is reused as-is. The validation contract
+(`docs/tasks/03_ug2en_decoding_fix.md` §Step 4) is that the fix is
+*additive*: `qwen_zeroshot` UG→EN must reproduce within ±0.5 chrF of
+30.29 (and `llama_zeroshot` within ±0.5 of 4.71). If `qwen_finetuned`
+UG→EN climbs back toward the zero-shot Qwen baseline after the fix, the
+regression was decoding and training is correct. If it does **not**, the
+regression is a real Mix-20 over-fitting effect and is reported as the
+headline finding rather than engineered away.
+
+### What the test suite now guarantees
+
+- **No more silent chat-marker leaks**:
+  `tests/test_evaluation_translation.py::test_stop_token_ids_adds_known_chat_markers`
+  ensures every known marker the tokenizer recognises is in the stop
+  set, and `test_clean_translation_output_*` (×6) lock in the
+  post-decode trim semantics across `<|im_end|>`, `<|eot_id|>`,
+  `\nassistant\n`, and the earliest-marker rule.
+- **No more free-form WCM**:
+  `tests/test_evaluation_wcm.py::test_classify_uyghur_returns_argmax_label_from_candidate_set`
+  asserts the return is always one of the candidate labels under
+  argmax-log-likelihood scoring, with a stub model that has *no*
+  string-generation surface at all.
+
+---
+
 ## Summary Table
 
 | # | Change | Direction | Primary Reason |
@@ -332,6 +428,7 @@ similar silent failure modes are identified.
 | 10 | Seeded RNGs + early stopping + best-checkpoint + native assistant-only loss | Reproducibility + waste reduction | Final adapter = lowest `eval_loss` checkpoint, not the last; runs are deterministic from `run_config.json` |
 | 11 | Pytest contract suite for the data split | Regression prevention | Locks in the no-leakage invariant + guards against shipped smoke defaults |
 | 12 | Experiment 0 for zero-shot eval; experiment 1 eval = `qwen_finetuned` only | Compute / workflow | Zero-shot FLORES/WCM/C4 numbers are invariant across fine-tunes; re-running them on every experiment-1 eval wasted ~25 min per variant. WCM loader fixed to `minority/ug.txt` (HF `split=test` was Chinese-only, no labels). |
+| 13 | FLORES stop-token list + post-decode trim; WCM constrained log-likelihood scoring | Decoding/scoring correctness | UG→EN chrF collapse 30.29 → 9.38 was a chat-marker leak past `<|im_end|>` (asymmetric because the noise is Latin-script — invisible to chrF on Arabic-script EN→UG, catastrophic on Latin-script UG→EN). WCM below-chance accuracy was free-form generation + substring match instead of constrained scoring. Both fixed without retraining the adapter. |
 
 ---
 

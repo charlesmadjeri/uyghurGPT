@@ -74,6 +74,20 @@ UG→EN translation is expected to score significantly higher than EN→UG on ch
 - If EN→UG chrF is low in absolute terms, compare the *relative gain* over zero-shot (the delta matters more than the absolute score)
 - Consider a qualitative analysis: show 3–5 example outputs in both directions to illustrate where the model succeeds and fails
 
+**Confounder caught on `run_20260524_020432` (do not mis-read the table):**
+The first fine-tune run produced an *apparent* reversal of this
+asymmetry: `qwen_finetuned` scored EN→UG chrF 14.18 > UG→EN chrF 9.38
+(the table in `PROJECT_RESULTS.md` 2026-05-24). That reversal was a
+**decoding artifact, not a real change in the underlying asymmetry**:
+the adapter leaked `<|im_end|>` past the natural answer, and the
+trailing Latin-script garbage tanks chrF on the Latin-script UG→EN
+reference while being almost invisible on the Arabic-script EN→UG
+reference. The mechanism + fix (stop-token list + post-decode trim) is
+documented in `PROJECT_REFINEMENT.md` §13; the post-fix re-eval against
+the same adapter is the data point that confirms whether the genuine
+asymmetry returns (UG→EN > EN→UG) or whether Mix-20 has a real
+over-fitting effect on the generate-English side.
+
 ---
 
 ## Data Available
@@ -183,10 +197,15 @@ Evaluation happens at **two levels**:
 ### Core evaluation (reported)
 | Benchmark | Task | Metric | Models evaluated |
 |-----------|------|--------|-----------------|
-| FLORES+ (devtest) | EN→UG translation | chrF, BLEU | Qwen fine-tune, Qwen zero-shot, LLaMA zero-shot, CUTE-Llama-P (if available) |
+| FLORES+ (devtest) | EN→UG translation | chrF, BLEU | Qwen fine-tune (`--experiment 1`), Qwen + LLaMA zero-shot (`--experiment 0`), CUTE-Llama-P (`--experiment 2`, few-shot continuation) |
 | FLORES+ (devtest) | UG→EN translation | chrF, BLEU | Same |
 | WCM-v2 | Uyghur text classification | Accuracy | Same |
 | Held-out English split (C4, 1K samples) | Perplexity | PPL | Qwen fine-tune vs Qwen zero-shot (catastrophic forgetting check) |
+
+`chrF` here is sacrebleu's default character n-gram F-score
+(`char_order=6, word_order=0`), **not chrF++**. The metric name is
+documented as plain "chrF" in all artifact JSON and report tables to
+match what the code actually computes (`shared/evaluation.py::_corpus_scores`).
 
 ### Stretch evaluation
 | Benchmark | Task | Status |
@@ -283,4 +302,4 @@ Preflight artifacts (run once per cluster, not per experiment) live under
 
 ---
 
-*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Experiment 0: zero-shot baselines (eval once). Experiment 1: Qwen2.5-7B-Instruct QLoRA Mix-20 on FLORES-200 + WCM-v2 (`minority/ug.txt`). CUTE-Llama-P is back as a planned core baseline now that the 24 GB MIG slice and preflight check 5 confirm it loads and produces Uyghur output (few-shot prompted; protocol difference noted). EN↔UG asymmetry documented as expected outcome. MiLiC-Eval deferred to stretch. All stretch goals gated behind core completion. **Compute update:** MIG slice upgraded from `1g.10gb` (~10 GB) to ~24 GB — bf16 LoRA now feasible; QLoRA remains default; thresholds and headroom revised accordingly.*
+*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Experiment 0: zero-shot baselines (eval once). Experiment 1: Qwen2.5-7B-Instruct QLoRA Mix-20 on FLORES-200 + WCM-v2 (`minority/ug.txt`). Experiment 2: CUTE-Llama-P few-shot baseline (eval only, base-LM continuation prompt). EN↔UG asymmetry documented as expected outcome; the apparent reversal on `run_20260524_020432` was a chat-marker decoding bug, see `PROJECT_REFINEMENT.md` §13. MiLiC-Eval deferred to stretch. All stretch goals gated behind core completion. **Compute update:** MIG slice upgraded from `1g.10gb` (~10 GB) to ~24 GB — bf16 LoRA now feasible; QLoRA remains default; thresholds and headroom revised accordingly.*
