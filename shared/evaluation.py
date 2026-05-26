@@ -77,6 +77,74 @@ def load_eval_model(model_choice: str, adapter_path: Path | None = None):
     return base, tokenizer
 
 
+# Chat / role markers we want generation to stop on. Qwen's ChatML
+# tokenizer maps each of these to a single special id; LLaMA-3.1's chat
+# template uses ``<|eot_id|>`` / ``<|start_header_id|>``. ``_stop_token_ids``
+# below resolves whichever ones the tokenizer actually knows about.
+_STOP_TOKEN_STRINGS = (
+    "<|im_end|>",
+    "<|im_start|>",
+    "<|endoftext|>",
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+)
+
+# Substrings we hard-trim from the decoded output after generation. Even
+# with ``skip_special_tokens=True`` an adapter can learn to emit the
+# *literal text* "<|im_end|>", or a fresh "\nassistant\n" turn header, when
+# it has been over-trained on the chat template. These markers must never
+# leak into a translation hypothesis or chrF / BLEU collapses (this is the
+# root cause of the UG→EN regression diagnosed in
+# ``docs/tasks/03_ug2en_decoding_fix.md``).
+_POST_DECODE_TRIM_MARKERS = (
+    "<|im_end|>",
+    "<|im_start|>",
+    "<|endoftext|>",
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "\nassistant\n",
+    "\nsystem\n",
+    "\nuser\n",
+)
+
+
+def _stop_token_ids(tokenizer) -> list[int]:
+    """List of stop token ids derived from the tokenizer's special vocabulary.
+
+    Always includes ``tokenizer.eos_token_id`` when present. Adds any chat
+    marker (``<|im_end|>``, ``<|eot_id|>``, …) the tokenizer knows about.
+    Order is stable for reproducibility and the list is deduplicated; the
+    return is safe to hand to ``model.generate(eos_token_id=...)`` which
+    accepts either an int or a list of ints from transformers >= 4.45.
+    """
+    ids: list[int] = []
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos, int) and eos >= 0:
+        ids.append(eos)
+    for marker in _STOP_TOKEN_STRINGS:
+        tid = tokenizer.convert_tokens_to_ids(marker)
+        if isinstance(tid, int) and tid >= 0 and tid not in ids:
+            ids.append(tid)
+    return ids
+
+
+def _clean_translation_output(text: str) -> str:
+    """Hard-trim chat markers and assistant-turn headers from a hypothesis.
+
+    Splits on the **first** occurrence of any marker in
+    ``_POST_DECODE_TRIM_MARKERS`` and keeps the prefix. Idempotent; safe
+    on outputs that already lack any marker.
+    """
+    earliest = len(text)
+    for marker in _POST_DECODE_TRIM_MARKERS:
+        idx = text.find(marker)
+        if idx != -1 and idx < earliest:
+            earliest = idx
+    return text[:earliest].strip()
+
+
 @torch.inference_mode()
 def generate_translation(model, tokenizer, source: str, src_lang: str, tgt_lang: str, max_new_tokens: int = 256) -> str:
     messages = [
@@ -94,15 +162,17 @@ def generate_translation(model, tokenizer, source: str, src_lang: str, tgt_lang:
     )
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    stop_ids = _stop_token_ids(tokenizer)
     out = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
         do_sample=False,
         pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+        eos_token_id=stop_ids if stop_ids else tokenizer.eos_token_id,
     )
     new_ids = out[0][inputs["input_ids"].shape[1] :]
-    return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+    decoded = tokenizer.decode(new_ids, skip_special_tokens=True)
+    return _clean_translation_output(decoded)
 
 
 def _corpus_scores(hypotheses: list[str], references: list[str]) -> dict:
