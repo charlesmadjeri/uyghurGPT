@@ -62,12 +62,29 @@ Cross-check: A2 zero-shot mean chrF must be within ±2 chrF of the
 n=20 Slurm 2766 baseline (`qwen_zeroshot` mean chrF 30.33) to trust
 the A2 numbers.
 
-## Sanity-gate (carried — cheap to fold into A1 push)
+## In-flight: exp-0 rep-penalty-only zero-shot sanity gate
+
+> Submitted **before** commit `9b6141d` (A1/A2), so the cluster's
+> `shared/evaluation.py` has `repetition_penalty=1.15` +
+> `no_repeat_ngram_size=4` UG→EN but **no env-var beam hook**. Distinct
+> from "A1 exp-0" below — do not conflate.
+
+- **Variable changed vs Slurm 2749:** rep-penalty + no_repeat_ngram_size
+  only. `num_beams` is still `1`.
+- **Pass:** `qwen_zeroshot` UG→EN chrF within ±0.5 of **30.10**;
+  `llama_zeroshot` UG→EN chrF within ±0.5 of **4.71**.
+- **Pull + log:** add a §1 entry "rep-penalty-only zero-shot sanity
+  gate" (closes Slurm 2768's open item). If chrF moves >0.5,
+  investigate before continuing with A1.
+
+## A1 exp-0 (conditional — only if A1 exp-1 lands a useful lift)
 
 `UYGHUR_UG2EN_NUM_BEAMS=4` also applies to zero-shot at eval time, so
-either (a) include `--experiment 0` in A1 as a second push, or (b) trust
-the Slurm 2766 zero-shot 0 % collapse and skip. **Recommend (a)** —
-1 h cost, settles the gate from §2768's open item:
+to keep beams as the project default we need a beams-on zero-shot
+gate. Defer until A1 exp-1 result is in:
+
+- If A1 exp-1 chrF > Slurm 2768 by ≥1 chrF → run this gate.
+- If A1 exp-1 is a no-op or worse → skip; we'll revert beams.
 
 ```bash
 python3 scripts/push.py --server ju-compute-server \
@@ -76,8 +93,8 @@ python3 scripts/push.py --server ju-compute-server \
 ```
 
 `qwen_zeroshot` UG→EN chrF must stay within ±0.5 of **30.10**
-(Slurm 2749). If it moves >0.5, narrow the beam path to fine-tuned-only
-(e.g. an additional env var or restrict via adapter presence).
+(Slurm 2749) **and** within ±0.5 of the rep-penalty-only zero-shot
+gate above (so we can attribute any movement to beams specifically).
 
 ## Done (remove when read)
 
