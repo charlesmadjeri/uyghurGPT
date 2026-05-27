@@ -103,19 +103,64 @@ the numbers moved**. It has three sections:
   walltime will not be enough. **No artifacts written yet.** Re-submit
   required with `--time 1-00:00:00`.
 
-### Pending re-runs (in flight)
+### 2026-05-27 — `run_20260526_223852` (Slurm 2749) — zero-shot WCM constrained-LL re-eval
 
-- `qwen_zeroshot` + `llama_zeroshot` WCM under constrained-LL — **Slurm
-  2749 / `run_20260526_223852`** (full exp-0 re-eval; FLORES + C4 are
-  re-computed but expected byte-identical, the new information is the
-  WCM column). Submitted with `push.py`'s default `--time 6:00:00`.
-- `cute_llama_p` full eval (Task 01) — **Slurm 2750 /
-  `run_20260526_222254`** (re-submitted with `--time 1-00:00:00` after
-  Slurm 2745 timed out at 6 h on `[eval] 50/1012` EN→UG).
+> Full exp-0 re-eval (FLORES + WCM + C4 for `qwen_zeroshot` +
+> `llama_zeroshot`) with the WCM constrained-LL scoring path active.
+> No code changes since Slurm 2744. Submitted with `push.py`'s
+> default `--time 6:00:00`; completed in-budget.
+
+- **=** FLORES + C4 PPL reproduce against the May-24 cells within
+  rounding (`qwen_zs` EN→UG chrF 9.96 → 9.963, UG→EN chrF 30.29 →
+  30.0957; `llama_zs` EN→UG chrF 0.84 → 0.8447, UG→EN chrF 4.71 →
+  4.705; PPL byte-identical at 16.5949 / 13.6891). Deterministic
+  decoding holds across the May-24 / May-25 / May-27 runs.
+- **=** WCM `qwen_zeroshot`: 6.33 % (19 / 300, free-form, Slurm 2714)
+  → **6.33 % (19 / 300, constrained-LL, Slurm 2749)**. Same correct
+  count under both protocols — Qwen's free-form output happens to
+  contain a legal label on the same 19 rows the LL argmax picks. No
+  movement, still well below the 16.7 % random floor.
+- **+** WCM `llama_zeroshot`: 0.67 % (2 / 300, free-form, Slurm 2714)
+  → **3.00 % (9 / 300, constrained-LL, Slurm 2749)**. ×4.5 lift —
+  consistent with constrained-LL recovering a legal label that
+  free-form scoring discarded. Still below random.
+- **Implication.** Both zero-shot variants are now scored under the
+  *same* protocol as `qwen_finetuned` (constrained-LL). The fine-tune
+  WCM gap is now apples-to-apples: `qwen_ft` 21.00 % vs `qwen_zs`
+  6.33 % = **+14.67 pp** absolute (×3.3 over zero-shot). Both still
+  far below the 85.3 % majority floor — see §2 *Analysis*.
+
+### 2026-05-26 / 27 — Slurm 2748 + 2750 (CUTE-Llama-P) — both stalled, no FLORES output
+
+- `run_20260526_222254` (Slurm 2748): pushed with default `--time
+  6:00:00`; `run_status.json` froze at `"evaluating"` after **1 min**
+  (22:22 → 22:23). Slurm log ends right after `[eval] FLORES-200
+  n=1012 few-shot k=3 (EN→UG then UG→EN) ...` — never printed a
+  single `[eval]   50/1012` progress dot. No artifacts beyond
+  `run_config.json` / `run_status.json`. Most likely killed by Slurm
+  walltime + a slow first-batch generation, but could also be a hang
+  in `generate()` on the few-shot prompt.
+- `run_20260526_224102` (Slurm 2750): re-submitted with `--time
+  1-00:00:00`. Same failure mode — Slurm log ends after `[eval]
+  FLORES-200 n=1012 few-shot k=3 ...` with no progress dots; status
+  last updated 00:07 (≈ 1 h 25 min into the run) and has not moved
+  since. As of pull at 02:07 the job has produced no FLORES,
+  WCM, or PPL artifact. **The `cute_llama_p` row in §2 remains
+  `pending`; this is now the only outstanding cell in the core
+  comparison table.**
+- **Next action** (see `TODO.md` "Investigate CUTE-Llama-P FLORES
+  stall"): inspect `squeue -u` / Slurm accounting for 2750 to confirm
+  whether it actually crashed vs. is still running with buffered
+  output; if running, wait; if dead, instrument
+  `generate_translation_fewshot` with a per-sentence print and lower
+  the few-shot `k` or `max_new_tokens` before the next resubmit.
+
+### Pending diagnostics
+
 - *(Deferred, not on the cluster yet — see `TODO.md`)* UG→EN
   per-sentence failure-mode diagnostic (`scripts/debug_ug2en.py`).
-  Waiting for a queue slot to free; informational, not on the critical
-  path for the §2 table.
+  Waiting for a queue slot to free; informational, not on the
+  critical path for the §2 table.
 
 ---
 
@@ -127,19 +172,19 @@ the source run for each populated cell is noted under the table.
 
 | Variant | FLORES EN→UG chrF | EN→UG BLEU | FLORES UG→EN chrF | UG→EN BLEU | WCM Uyghur acc. | C4 EN PPL |
 |---------|-------------------|------------|-------------------|------------|------------------|-----------|
-| `qwen_zeroshot`   | 9.96      | 0.23   | **30.29** | 4.09   | 6.33 % *(pending re-eval — free-form scoring)* | 16.59 |
-| `llama_zeroshot`  | 0.84      | 0.45   | 4.71      | 1.36   | 0.67 % *(pending re-eval — free-form scoring)* | **13.69** |
-| `qwen_finetuned`  | **14.1762** | 0.0354 | 9.385   | 0.1387 | **21.00 %** (63 / 300, constrained-LL) | 16.1667 |
-| `cute_llama_p`    | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| `qwen_zeroshot`   | 9.963       | 0.2389 | **30.0957** | 4.2854 | 6.33 % (19 / 300, constrained-LL)      | 16.5949 |
+| `llama_zeroshot`  | 0.8447      | 0.449  | 4.705       | 1.3592 | 3.00 % (9 / 300, constrained-LL)       | **13.6891** |
+| `qwen_finetuned`  | **14.1762** | 0.0354 | 9.385       | 0.1387 | **21.00 %** (63 / 300, constrained-LL) | 16.1667 |
+| `cute_llama_p`    | _pending_   | _pending_ | _pending_ | _pending_ | _pending_                              | _pending_ |
 
 Sources for populated cells (latest measurement per metric):
 
 | Variant | FLORES rows | WCM row | C4 PPL row |
 |---|---|---|---|
-| `qwen_zeroshot`  | `run_20260525_143722` (Slurm 2714) | `run_20260525_143722` (Slurm 2714, free-form — *to be superseded*) | `run_20260525_143722` |
-| `llama_zeroshot` | `run_20260525_143722`              | `run_20260525_143722` (free-form — *to be superseded*)              | `run_20260525_143722` |
-| `qwen_finetuned` | `run_20260524_020432` (Slurm 2744) | `run_20260524_020432` (Slurm 2744, constrained-LL)                   | `run_20260524_020432` (Slurm 2744) |
-| `cute_llama_p`   | n/a (Slurm 2745 timed out)         | n/a                                                                  | n/a |
+| `qwen_zeroshot`  | `run_20260526_223852` (Slurm 2749) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
+| `llama_zeroshot` | `run_20260526_223852` (Slurm 2749) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
+| `qwen_finetuned` | `run_20260524_020432` (Slurm 2744) | `run_20260524_020432` (Slurm 2744, constrained-LL) | `run_20260524_020432` (Slurm 2744) |
+| `cute_llama_p`   | n/a (Slurm 2745 / 2748 / 2750 all stalled before any FLORES output) | n/a | n/a |
 
 ### Analysis (current best estimate)
 
@@ -157,14 +202,19 @@ Sources for populated cells (latest measurement per metric):
   +0.4 (16.59 → 16.17), so this is task-shaped, not catastrophic-
   forgetting-shaped. Reported as the headline finding rather than
   engineered away.
-- **WCM: constrained scoring lifts `qwen_finetuned` to 21 %**, still
-  far below the 85.3 % majority floor. The model now always returns a
-  legal label (scoring path is sound); the gap to majority is a real
-  "the chat-template prompt does not anchor the Uyghur classifier on
-  the right label" finding. The zero-shot WCM cells are still the
-  pre-fix free-form numbers and **must be re-run with constrained-LL
-  scoring** before any qwen_zeroshot vs qwen_finetuned WCM Δ is
-  reported in the paper. Command listed in §1 *Pending re-runs*.
+- **WCM: fine-tune beats zero-shot by ×3.3 under apples-to-apples
+  scoring, but the absolute level stays well below random for both
+  zero-shot variants.** All three variants now scored under
+  constrained-LL (Slurm 2749 closed the protocol gap): `qwen_ft` 21.00 %
+  vs `qwen_zs` 6.33 % vs `llama_zs` 3.00 %. The +14.67 pp delta on
+  Qwen is the cleanest single-metric win for the fine-tune in the
+  table. Two caveats stay on the record: (i) both zero-shot variants
+  are *below* the 16.7 % random floor — Qwen and LLaMA actively
+  *anti-prefer* the gold labels under the chat-template prompt, which
+  is a real prompt-anchoring finding worth flagging in the analysis
+  rather than a bug; (ii) `qwen_ft` itself is still far below the
+  85.3 % majority floor, so the fine-tune is *better calibrated*
+  toward the label set, not yet *competent* at the task.
 - **BLEU is uniformly tiny on FLORES.** chrF is the right primary
   metric for low-resource Uyghur — token-level BLEU is near zero for
   every variant including the zero-shot baselines. Reported but not
@@ -175,14 +225,17 @@ Sources for populated cells (latest measurement per metric):
 
 ### Outstanding before the core comparison is complete
 
-1. **`cute_llama_p` row.** Required for the CUTE-Llama-P comparison
-   that motivates the project (`docs/01_prob_describtion.md` §1.5).
-   Blocked on a successful experiment-2 Slurm run (re-submit with
-   `--time 1-00:00:00`).
-2. **`qwen_zeroshot` / `llama_zeroshot` WCM under constrained-LL
-   scoring.** Without this, the WCM column mixes two different scoring
-   protocols and the Δ between `qwen_zeroshot` and `qwen_finetuned` is
-   not interpretable.
+1. **`cute_llama_p` row — only remaining gap.** Required for the
+   CUTE-Llama-P comparison that motivates the project
+   (`docs/01_prob_describtion.md` §1.5). Three submissions
+   (Slurm 2745 / 2748 / 2750) have all stalled before producing any
+   FLORES progress dots — even the 24 h walltime resubmit (2750) is
+   sitting silent on the first few-shot batch. Investigation tracked
+   in `TODO.md` "Investigate CUTE-Llama-P FLORES stall" and §1
+   "2026-05-26 / 27 — Slurm 2748 + 2750".
+2. ~~`qwen_zeroshot` / `llama_zeroshot` WCM under constrained-LL
+   scoring.~~ **Done** on Slurm 2749 — see §1 "2026-05-27 —
+   `run_20260526_223852`".
 3. **(Optional) per-direction chrF confidence intervals via sacrebleu
    `--paired-bs`.** Currently the eval pipeline reports point estimates
    only; tracked in `docs/04_planned_evaluation.md` §4.3.

@@ -1,9 +1,11 @@
 # Task 02 — WCM-v2 re-evaluation across variants
 
-> **Status:** running (1 of 4 variants done — `qwen_finetuned` 21.00 %
-> via constrained-LL on Slurm 2744; `qwen_zeroshot` + `llama_zeroshot`
-> re-eval in flight as Slurm 2749 / `run_20260526_223852`;
-> `cute_llama_p` cell blocked on Task 01's Slurm 2750).
+> **Status:** running (3 of 4 variants done — `qwen_finetuned` 21.00 %
+> via constrained-LL on Slurm 2744; `qwen_zeroshot` 6.33 % and
+> `llama_zeroshot` 3.00 % on Slurm 2749 / `run_20260526_223852`;
+> `cute_llama_p` cell still blocked on Task 01 — Slurm 2745 / 2748 /
+> 2750 have all stalled before any FLORES progress, see
+> `PROJECT_RESULTS.md` §1 "2026-05-26 / 27 — Slurm 2748 + 2750").
 > **Depends on:** none for the qwen / llama re-eval; Task 01 must land
 > first to also cover `cute_llama_p`.
 > **Blocks:** Task 04 (consolidated results table), Task 05 (analysis),
@@ -43,12 +45,18 @@ for every variant under a **single consistent scoring protocol**
 
 1. WCM-v2 Uyghur accuracy populated under **constrained-LL scoring**
    for each of:
-   - `qwen_zeroshot` — pending Slurm 2749 / `run_20260526_223852`.
-   - `llama_zeroshot` — pending Slurm 2749 / `run_20260526_223852`.
+   - `qwen_zeroshot` — **done** (6.33 %, 19 / 300, Slurm 2749 /
+     `run_20260526_223852`). Identical count to the May-26 free-form
+     2714 backfill — both protocols pick the same 19 rows for Qwen.
+   - `llama_zeroshot` — **done** (3.00 %, 9 / 300, Slurm 2749 /
+     `run_20260526_223852`). ×4.5 over the 0.67 % free-form 2714 cell.
    - `qwen_finetuned` — **done** (21.00 %, 63 / 300, Slurm 2744 on
      `run_20260524_020432`'s `final/` adapter).
-   - `cute_llama_p` — delivered by Task 01 (Slurm 2750 /
-     `run_20260526_222254`).
+   - `cute_llama_p` — still blocked on Task 01. Three exp-2
+     submissions (Slurm 2745 / 2748 / 2750) have all stalled before
+     any FLORES progress dots; see `PROJECT_RESULTS.md` §1 entry
+     "2026-05-26 / 27 — Slurm 2748 + 2750" for the investigation
+     handoff and `TODO.md` for the next-action checklist.
 2. The `wcm` block of each variant's `eval_summary.json` reports
    `accuracy`, `correct`, `total = 300`, `text_column = "text"`,
    `label_column = "label"`, and the constrained-LL marker (no
