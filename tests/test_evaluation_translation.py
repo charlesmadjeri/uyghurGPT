@@ -153,3 +153,79 @@ def test_chat_generate_extra_kwargs_uyghur_target_is_empty():
 
     assert _chat_generate_extra_kwargs("Uyghur") == {}
     assert _chat_generate_extra_kwargs("uyghur") == {}
+
+
+def test_chat_generate_extra_kwargs_beams_off_by_default(monkeypatch):
+    """Default behaviour must match Slurm 2768 — no beams unless opted in."""
+    from shared.evaluation import _UG2EN_NUM_BEAMS_ENV, _chat_generate_extra_kwargs
+
+    monkeypatch.delenv(_UG2EN_NUM_BEAMS_ENV, raising=False)
+    extras = _chat_generate_extra_kwargs("English")
+    assert "num_beams" not in extras
+    assert "early_stopping" not in extras
+
+
+def test_chat_generate_extra_kwargs_beams_enable_via_env(monkeypatch):
+    """``UYGHUR_UG2EN_NUM_BEAMS=4`` adds num_beams=4 + early_stopping."""
+    from shared.evaluation import (
+        _UG2EN_NUM_BEAMS_ENV,
+        _UG2EN_NO_REPEAT_NGRAM_SIZE,
+        _UG2EN_REPETITION_PENALTY,
+        _chat_generate_extra_kwargs,
+    )
+
+    monkeypatch.setenv(_UG2EN_NUM_BEAMS_ENV, "4")
+    extras = _chat_generate_extra_kwargs("English")
+    assert extras == {
+        "repetition_penalty": _UG2EN_REPETITION_PENALTY,
+        "no_repeat_ngram_size": _UG2EN_NO_REPEAT_NGRAM_SIZE,
+        "num_beams": 4,
+        "early_stopping": True,
+    }
+
+
+def test_chat_generate_extra_kwargs_beams_ignored_for_uyghur(monkeypatch):
+    """Env var must not leak into EN→UG (Uyghur-script generation)."""
+    from shared.evaluation import _UG2EN_NUM_BEAMS_ENV, _chat_generate_extra_kwargs
+
+    monkeypatch.setenv(_UG2EN_NUM_BEAMS_ENV, "4")
+    assert _chat_generate_extra_kwargs("Uyghur") == {}
+
+
+def test_chat_generate_extra_kwargs_beams_bad_value_falls_back(monkeypatch):
+    """Garbage env-var values are silently coerced to ``num_beams=1`` (no beams)."""
+    from shared.evaluation import _UG2EN_NUM_BEAMS_ENV, _chat_generate_extra_kwargs
+
+    monkeypatch.setenv(_UG2EN_NUM_BEAMS_ENV, "not-a-number")
+    extras = _chat_generate_extra_kwargs("English")
+    assert "num_beams" not in extras
+
+
+def test_build_chat_fewshot_messages_structure():
+    from shared.evaluation import _build_chat_fewshot_messages
+
+    exemplars = [("ug1", "en1"), ("ug2", "en2"), ("ug3", "en3")]
+    msgs = _build_chat_fewshot_messages("ug_target", "Uyghur", "English", exemplars)
+
+    assert msgs[0]["role"] == "system"
+    assert "Uyghur" in msgs[0]["content"]
+    assert "English" in msgs[0]["content"]
+    assert len(msgs) == 1 + 2 * len(exemplars) + 1
+
+    for i, (ex_src, ex_tgt) in enumerate(exemplars):
+        u = msgs[1 + 2 * i]
+        a = msgs[1 + 2 * i + 1]
+        assert u == {"role": "user", "content": ex_src}
+        assert a == {"role": "assistant", "content": ex_tgt}
+
+    assert msgs[-1] == {"role": "user", "content": "ug_target"}
+
+
+def test_build_chat_fewshot_messages_zero_exemplars_matches_zero_shot_shape():
+    """k=0 falls back to system + single user turn — same shape as ``generate_translation``."""
+    from shared.evaluation import _build_chat_fewshot_messages
+
+    msgs = _build_chat_fewshot_messages("src", "Uyghur", "English", [])
+    assert len(msgs) == 2
+    assert msgs[0]["role"] == "system"
+    assert msgs[1] == {"role": "user", "content": "src"}

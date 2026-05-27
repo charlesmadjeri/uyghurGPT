@@ -96,7 +96,34 @@ def main():
         default=None,
         help="Subsample CUTE-P / eval for smoke tests (passed to main.py)",
     )
+    parser.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Extra environment variable to export inside the Slurm wrap "
+            "before main.py runs. Repeatable, e.g. "
+            "`--env UYGHUR_UG2EN_NUM_BEAMS=4 --env FOO=bar`. Values may not "
+            "contain double-quotes."
+        ),
+    )
     args = parser.parse_args()
+
+    extra_env_exports = ""
+    for kv in args.env:
+        if "=" not in kv:
+            print(err(f"--env expects KEY=VALUE, got: {kv!r}"))
+            sys.exit(2)
+        key, value = kv.split("=", 1)
+        key = key.strip()
+        if not key.isidentifier():
+            print(err(f"--env key must be a valid identifier, got: {key!r}"))
+            sys.exit(2)
+        if '"' in value:
+            print(err(f"--env value may not contain double-quotes: {kv!r}"))
+            sys.exit(2)
+        extra_env_exports += f"export {key}={value} && "
 
     # Wall-time default depends on the experiment (observed time × 1.5).
     # See docs/PROJECT_RESULTS.md for the source measurements.
@@ -179,6 +206,7 @@ def main():
         f"export CUDA_VISIBLE_DEVICES=0 && "
         f"export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && "
         f"export PYTHONUNBUFFERED=1 && "
+        f"{extra_env_exports}"
         f"{install_cmd}{REMOTE_PYTHON} -u main.py --experiment {args.experiment} "
         f"--mode {args.mode} {run_arg}{sample_arg}"
         f"--model {args.model} --mix {args.mix} --epochs {args.epochs}\""

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,12 +109,26 @@ def _score_one(
     ug_sources: list[str],
     en_refs: list[str],
     label: str,
+    fewshot_exemplars: list[tuple[str, str]] | None = None,
 ) -> list[dict]:
-    from shared.evaluation import generate_translation
+    from shared.evaluation import (
+        generate_translation,
+        generate_translation_chat_fewshot,
+    )
 
     rows: list[dict] = []
     for i, (src, ref) in enumerate(zip(ug_sources, en_refs)):
-        hyp = generate_translation(model, tokenizer, src, "Uyghur", "English")
+        if fewshot_exemplars:
+            hyp = generate_translation_chat_fewshot(
+                model,
+                tokenizer,
+                src,
+                "Uyghur",
+                "English",
+                exemplars=fewshot_exemplars,
+            )
+        else:
+            hyp = generate_translation(model, tokenizer, src, "Uyghur", "English")
         chrf = _sentence_chrf(hyp, ref)
         row = {
             "index": i,
@@ -185,6 +200,17 @@ def main() -> int:
         help="Also run qwen zero-shot on the same sentences (loads model twice)",
     )
     parser.add_argument(
+        "--fewshot-k",
+        type=int,
+        default=0,
+        help=(
+            "If >0, use chat-style few-shot k=N with UG→EN exemplars from "
+            "the FLORES dev split (disjoint from devtest). A2 diagnostic: "
+            "does the FT adapter still translate UG→EN given in-context "
+            "examples, or has the UG→EN circuit gone away?"
+        ),
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -197,17 +223,36 @@ def main() -> int:
         print("Pull checkpoints or pass --adapter explicitly.", file=sys.stderr)
         return 1
 
-    from shared.evaluation import load_eval_model, load_flores_pairs
+    from shared.evaluation import (
+        load_eval_model,
+        load_flores_dev_exemplars,
+        load_flores_pairs,
+    )
 
     print(f"[debug] Loading FLORES+ devtest (n={args.num_samples}) …")
     en_refs, ug_sources = load_flores_pairs(max_samples=args.num_samples)
+
+    fewshot_exemplars: list[tuple[str, str]] | None = None
+    if args.fewshot_k > 0:
+        _, fewshot_exemplars = load_flores_dev_exemplars(k=args.fewshot_k)
+        print(
+            f"[debug] Loaded {args.fewshot_k} UG→EN exemplars from FLORES dev "
+            "split for chat-style few-shot (A2 diagnostic)."
+        )
 
     all_rows: list[dict] = []
     summaries: list[dict] = []
 
     print(f"[debug] Loading fine-tuned qwen (adapter={args.adapter}) …")
     ft_model, ft_tok = load_eval_model("qwen", adapter_path=args.adapter)
-    ft_rows = _score_one(ft_model, ft_tok, ug_sources, en_refs, "qwen_finetuned")
+    ft_rows = _score_one(
+        ft_model,
+        ft_tok,
+        ug_sources,
+        en_refs,
+        "qwen_finetuned",
+        fewshot_exemplars=fewshot_exemplars,
+    )
     all_rows.extend(ft_rows)
     summaries.append(_summarize(ft_rows, "qwen_finetuned"))
     del ft_model
@@ -219,7 +264,14 @@ def main() -> int:
             torch.cuda.empty_cache()
         print("[debug] Loading qwen zero-shot …")
         zs_model, zs_tok = load_eval_model("qwen", adapter_path=None)
-        zs_rows = _score_one(zs_model, zs_tok, ug_sources, en_refs, "qwen_zeroshot")
+        zs_rows = _score_one(
+            zs_model,
+            zs_tok,
+            ug_sources,
+            en_refs,
+            "qwen_zeroshot",
+            fewshot_exemplars=fewshot_exemplars,
+        )
         all_rows.extend(zs_rows)
         summaries.append(_summarize(zs_rows, "qwen_zeroshot"))
         del zs_model
@@ -228,6 +280,8 @@ def main() -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "adapter": str(args.adapter.resolve()),
         "num_samples": args.num_samples,
+        "fewshot_k": args.fewshot_k,
+        "ug2en_num_beams_env": os.environ.get("UYGHUR_UG2EN_NUM_BEAMS", "unset"),
         "summaries": summaries,
         "rows": all_rows,
         "interpretation": {

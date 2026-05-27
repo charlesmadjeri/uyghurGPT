@@ -192,19 +192,39 @@ def _clean_translation_output(text: str) -> str:
 _UG2EN_REPETITION_PENALTY = 1.15
 _UG2EN_NO_REPEAT_NGRAM_SIZE = 4
 
+# A1 (option-1 follow-up): beam search on UG→EN is opt-in via env var so
+# Slurm 2768's "rep-penalty only" numbers stay reproducible by default.
+# Set ``UYGHUR_UG2EN_NUM_BEAMS=4`` (or higher) in the Slurm wrap to enable.
+_UG2EN_NUM_BEAMS_ENV = "UYGHUR_UG2EN_NUM_BEAMS"
+
 
 def _is_english_target(tgt_lang: str) -> bool:
     return tgt_lang.strip().lower() == "english"
 
 
+def _ug2en_num_beams() -> int:
+    """Read ``UYGHUR_UG2EN_NUM_BEAMS`` at call time; clamp to ``>= 1``."""
+    raw = os.environ.get(_UG2EN_NUM_BEAMS_ENV, "1")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 1
+    return max(1, n)
+
+
 def _chat_generate_extra_kwargs(tgt_lang: str) -> dict:
     """Extra ``model.generate`` kwargs for chat-template translation."""
-    if _is_english_target(tgt_lang):
-        return {
-            "repetition_penalty": _UG2EN_REPETITION_PENALTY,
-            "no_repeat_ngram_size": _UG2EN_NO_REPEAT_NGRAM_SIZE,
-        }
-    return {}
+    if not _is_english_target(tgt_lang):
+        return {}
+    kwargs: dict = {
+        "repetition_penalty": _UG2EN_REPETITION_PENALTY,
+        "no_repeat_ngram_size": _UG2EN_NO_REPEAT_NGRAM_SIZE,
+    }
+    n_beams = _ug2en_num_beams()
+    if n_beams > 1:
+        kwargs["num_beams"] = n_beams
+        kwargs["early_stopping"] = True
+    return kwargs
 
 
 @torch.inference_mode()
@@ -223,6 +243,83 @@ def generate_translation(model, tokenizer, source: str, src_lang: str, tgt_lang:
         messages, tokenize=False, add_generation_prompt=True
     )
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    stop_ids = _stop_token_ids(tokenizer)
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=stop_ids if stop_ids else tokenizer.eos_token_id,
+        **_chat_generate_extra_kwargs(tgt_lang),
+    )
+    out = model.generate(**inputs, **gen_kwargs)
+    new_ids = out[0][inputs["input_ids"].shape[1] :]
+    decoded = tokenizer.decode(new_ids, skip_special_tokens=True)
+    return _clean_translation_output(decoded)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Chat-style few-shot (A2 diagnostic: does the FT adapter still translate
+# UG→EN given in-context exemplars, or did the adapter's UG→EN circuit go
+# away?). The exemplars are pushed as alternating user/assistant turns so
+# the model sees the same chat template it was trained on.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _build_chat_fewshot_messages(
+    source: str,
+    src_lang: str,
+    tgt_lang: str,
+    exemplars: list[tuple[str, str]],
+) -> list[dict]:
+    """Multi-turn chat messages list for k-shot translation.
+
+    Shape::
+
+        system: "Translate the {src_lang} input to {tgt_lang}."
+        user:   <ex_src_1>
+        assistant: <ex_tgt_1>
+        ...
+        user:   <source>
+        (assistant span filled by ``generate``)
+    """
+    messages: list[dict] = [
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful bilingual assistant. "
+                f"Translate the {src_lang} input to {tgt_lang}."
+            ),
+        }
+    ]
+    for ex_src, ex_tgt in exemplars:
+        messages.append({"role": "user", "content": ex_src})
+        messages.append({"role": "assistant", "content": ex_tgt})
+    messages.append({"role": "user", "content": source})
+    return messages
+
+
+@torch.inference_mode()
+def generate_translation_chat_fewshot(
+    model,
+    tokenizer,
+    source: str,
+    src_lang: str,
+    tgt_lang: str,
+    exemplars: list[tuple[str, str]],
+    max_new_tokens: int = 256,
+) -> str:
+    """k-shot chat-template translation (A2 diagnostic path).
+
+    Same generation kwargs as :func:`generate_translation` — stop-token list,
+    post-decode trim, and the direction-conditional repetition controls
+    (plus optional beam search via ``UYGHUR_UG2EN_NUM_BEAMS``) all apply.
+    """
+    messages = _build_chat_fewshot_messages(source, src_lang, tgt_lang, exemplars)
+    prompt = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     stop_ids = _stop_token_ids(tokenizer)
     gen_kwargs = dict(
