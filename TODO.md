@@ -3,13 +3,13 @@
 Short-lived, actionable items. Pop entries as they land; delete this file
 when empty.
 
-## Re-submit UG→EN failure-mode diagnostic (Slurm 2751 failed)
+## Re-eval `qwen_finetuned` after UG→EN repetition controls (priority)
 
-Slurm **2751** crashed immediately with `ModuleNotFoundError: No module
-named 'shared'`. Fixed in `scripts/debug_ug2en.py` (`sys.path.insert(0,
-REPO_ROOT)`). Re-submit after rsync.
+Code shipped: `generate_translation` applies `repetition_penalty=1.15` +
+`no_repeat_ngram_size=4` when `tgt_lang == "English"` only (Slurm 2766
+showed 12/20 FT sentences stuck in a `"The 2 1 1 1 …"` greedy loop).
 
-**Step 1 — push (quote globs for zsh):**
+**Push + submit:**
 
 ```bash
 rsync -avz --progress \
@@ -18,41 +18,25 @@ rsync -avz --progress \
   --exclude=docs/papers/ --exclude=dataset/ --exclude=models/ \
   --exclude=checkpoints/ \
   ./ ju-compute-server:~/uyghurGPT/
+
+python3 scripts/push.py --server ju-compute-server \
+  --experiment 1 --mode eval --run-id 20260524_020432 --time 6:00:00
 ```
 
-**Step 2 — submit:**
+**Pull + log** (same commit): update `docs/PROJECT_RESULTS.md` §1 delta +
+§2 `qwen_finetuned` FLORES cells if UG→EN (or EN→UG) moves.
 
-```bash
-ssh ju-compute-server 'cd ~/uyghurGPT && mkdir -p results/debug && sbatch \
-  --job-name=debug_ug2en --time=2:00:00 --ntasks=1 --cpus-per-task=4 \
-  --mem=24G --gres=gpu:1 --partition=priority \
-  --output=results/debug/slurm_ug2en_%j.out \
-  --wrap="cd \$HOME/uyghurGPT && set -a && source .env && set +a && \
-    export HF_HOME=\$HOME/uyghurGPT/hf_cache && \
-    export HUGGING_FACE_HUB_TOKEN=\$HF_TOKEN && \
-    export CUDA_VISIBLE_DEVICES=0 && export PYTHONUNBUFFERED=1 && \
-    \$HOME/micromamba/envs/uyghur_env/bin/python -u \
-      scripts/debug_ug2en.py --compare-zeroshot -n 20"'
-```
+**Sanity gate:** `qwen_zeroshot` UG→EN chrF must stay within ±0.5 of **30.10**
+(`run_20260526_223852`). If EN→UG chrF drops >0.5 vs **14.18**, narrow the
+penalty to UG→EN-only (already the case) and investigate EN→UG separately.
 
-**Step 3 — pull:**
-
-```bash
-rsync -avz ju-compute-server:~/uyghurGPT/results/debug/ results/debug/
-```
-
-**Decision table** (after `results/debug/ug2en_<timestamp>.json`):
-
-| Dominant bucket | Next step |
-|---|---|
-| `A_wrong_language_uyghur` | Stronger EN cue at eval; else Mix-50 (`docs/tasks/bonus/02_qwen_mix_ablation.md`) |
-| `B_garbled_or_weak_english` | Higher Mix or LoRA capacity |
-| `C_decoding_or_template_leak` | Re-open `docs/tasks/03_ug2en_decoding_fix.md` |
-| `ok_english` | Inspect aggregation / sentence-length |
+Mechanism write-up: `PROJECT_REFINEMENT.md` §14. Diagnostic log:
+`results/debug/slurm_ug2en_2766.out`.
 
 ## Done (remove when read)
 
-- ~~CUTE-Llama-P exp 2 (Slurm 2750)~~ — `run_20260526_224102`, logged in
-  `PROJECT_RESULTS.md` §1 + §2.
-- ~~Zero-shot WCM constrained-LL (Slurm 2749)~~ — `run_20260526_223852`.
-- ~~Tasks 01 + 02~~ — marked `done` in `docs/tasks/`.
+- ~~Slurm 2766 `debug_ug2en`~~ — mechanism report in `PROJECT_RESULTS.md`
+  §1 + `PROJECT_REFINEMENT.md` §14.
+- ~~Training-data audit (option 4)~~ — balanced `ug2en`/`en2ug`; not a
+  coverage bug.
+- ~~CUTE-Llama-P / Tasks 01–02 / core §2 table~~ — Slurm 2750 / 2749.

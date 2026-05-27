@@ -37,11 +37,14 @@
   task-shaped, not catastrophic-forgetting-shaped. Reported as the
   headline finding in `PROJECT_RESULTS.md` §2 *Analysis* and feeds
   Task 05 (results analysis).
-- **Optional follow-up** — per-sentence failure-mode classification
-  via `scripts/debug_ug2en.py` (wrong-language / garbled-EN /
-  template-leak / ok-EN buckets). Not required to close this task;
-  tracked in `TODO.md` under "UG→EN failure-mode diagnostic on the
-  compute server".
+- **Follow-up (2026-05-27, Slurm 2766)** — `debug_ug2en.py` n=20:
+  **0×** leak (C), **0×** wrong-language (A); **12×** repetition collapse
+  (`"The 2 1 1 1 …"`), **8×** source-unfaithful EN hallucinations.
+  Logged in `PROJECT_REFINEMENT.md` §14.
+- **Follow-up (2026-05-27, code shipped — re-eval pending)** —
+  direction-conditional `repetition_penalty=1.15` +
+  `no_repeat_ngram_size=4` in `generate_translation` when
+  `tgt_lang == "English"`. Full FLORES re-eval tracked in `TODO.md`.
 
 ## Goal (original, retained for context)
 

@@ -1,8 +1,10 @@
 # Task 05 — Results analysis & qualitative examples
 
 > **Status:** not started.
-> **Depends on:** Tasks 01 (`cute_llama_p` numbers), 02 (WCM accuracy),
-> 03 (UG→EN decoding fix), 04 (consolidated table).
+> **Depends on:** Tasks 01–02 (done), 04 (consolidated table). Task 03
+> decoding fixes are done; **optional:** post-`repetition_penalty` FLORES
+> re-eval (`TODO.md`) before writing §8 "Negative / surprising results".
+> Mechanism narrative: `PROJECT_REFINEMENT.md` §14 + Slurm 2766 log.
 > **Blocks:** Task 06 (final report).
 > **Estimated wall-clock:** 1 day (writing + a few short adapter-loaded
 > inference batches for the qualitative examples).
@@ -46,9 +48,10 @@ the numbers.
       protocol-difference disclaimer; single-seed run; absolute chrF
       depressed by translationese — see
       `03_planned_approach.md` §1 caveat).
-   8. **Negative / surprising results** (anything that did not match
-      the pre-registered prediction; whether the Task-03 UG→EN
-      regression survived or not; LLaMA-3.1's near-zero UG capability).
+   8. **Negative / surprising results** (direction inversion vs
+      zero-shot; Slurm 2766 failure-mode split; whether post-
+      `repetition_penalty` UG→EN chrF moves off 9.39; LLaMA-3.1 near-
+      zero UG capability; WCM below random for all variants).
 
 2. `scripts/qualitative_examples.py` — small script that, given a list
    of FLORES `id`s and the run-id-per-variant mapping from Task 04,
