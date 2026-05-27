@@ -185,6 +185,28 @@ def _clean_translation_output(text: str) -> str:
     return text[:earliest].strip()
 
 
+# UG→EN chat decoding: greedy FT outputs on Slurm 2766 showed a stable
+# "The 2 1 1 1 …" loop to max_new_tokens. Base-LM few-shot already uses
+# repetition_penalty=1.15 in generate_translation_fewshot; apply the same
+# knobs only when generating English so EN→UG (Uyghur script) is unchanged.
+_UG2EN_REPETITION_PENALTY = 1.15
+_UG2EN_NO_REPEAT_NGRAM_SIZE = 4
+
+
+def _is_english_target(tgt_lang: str) -> bool:
+    return tgt_lang.strip().lower() == "english"
+
+
+def _chat_generate_extra_kwargs(tgt_lang: str) -> dict:
+    """Extra ``model.generate`` kwargs for chat-template translation."""
+    if _is_english_target(tgt_lang):
+        return {
+            "repetition_penalty": _UG2EN_REPETITION_PENALTY,
+            "no_repeat_ngram_size": _UG2EN_NO_REPEAT_NGRAM_SIZE,
+        }
+    return {}
+
+
 @torch.inference_mode()
 def generate_translation(model, tokenizer, source: str, src_lang: str, tgt_lang: str, max_new_tokens: int = 256) -> str:
     messages = [
@@ -203,13 +225,14 @@ def generate_translation(model, tokenizer, source: str, src_lang: str, tgt_lang:
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     stop_ids = _stop_token_ids(tokenizer)
-    out = model.generate(
-        **inputs,
+    gen_kwargs = dict(
         max_new_tokens=max_new_tokens,
         do_sample=False,
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=stop_ids if stop_ids else tokenizer.eos_token_id,
+        **_chat_generate_extra_kwargs(tgt_lang),
     )
+    out = model.generate(**inputs, **gen_kwargs)
     new_ids = out[0][inputs["input_ids"].shape[1] :]
     decoded = tokenizer.decode(new_ids, skip_special_tokens=True)
     return _clean_translation_output(decoded)

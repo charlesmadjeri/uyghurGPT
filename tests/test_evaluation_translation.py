@@ -132,3 +132,24 @@ def test_clean_translation_output_handles_llama_eot():
 
     polluted = "Translation here.<|eot_id|>extra garbage"
     assert _clean_translation_output(polluted) == "Translation here."
+
+
+def test_chat_generate_extra_kwargs_english_gets_repetition_controls():
+    from shared.evaluation import (
+        _UG2EN_NO_REPEAT_NGRAM_SIZE,
+        _UG2EN_REPETITION_PENALTY,
+        _chat_generate_extra_kwargs,
+    )
+
+    extras = _chat_generate_extra_kwargs("English")
+    assert extras == {
+        "repetition_penalty": _UG2EN_REPETITION_PENALTY,
+        "no_repeat_ngram_size": _UG2EN_NO_REPEAT_NGRAM_SIZE,
+    }
+
+
+def test_chat_generate_extra_kwargs_uyghur_target_is_empty():
+    from shared.evaluation import _chat_generate_extra_kwargs
+
+    assert _chat_generate_extra_kwargs("Uyghur") == {}
+    assert _chat_generate_extra_kwargs("uyghur") == {}
