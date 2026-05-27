@@ -74,17 +74,21 @@ UG→EN translation is expected to score significantly higher than EN→UG on ch
 - If EN→UG chrF is low in absolute terms, compare the *relative gain* over zero-shot (the delta matters more than the absolute score)
 - Consider a qualitative analysis: show 3–5 example outputs in both directions to illustrate where the model succeeds and fails
 
-**Observed reversal on `run_20260524_020432` (confirmed real, not a leak):**
-The fine-tuned model scores EN→UG chrF **14.18** > UG→EN chrF **9.38**
-vs `qwen_zeroshot` **9.96** / **30.10** — directions invert relative to
-zero-shot. Slurm 2744 falsified chat-marker leak as the cause (chrF
-byte-identical after stop/trim fix). Slurm 2766 (`debug_ug2en`, n=20)
-showed **0 %** template leak and **60 %** greedy repetition collapse on
-UG→EN. Data audit confirmed balanced `ug2en`/`en2ug` training rows
-(`PROJECT_REFINEMENT.md` §14). The headline finding is **training-shaped**
-(`assistant_only_loss` gradient bias + aggregated `eval_loss` checkpointing),
-not missing UG→EN examples. A direction-conditional `repetition_penalty`
-is shipped; full-corpus FLORES re-eval is pending (`TODO.md`).
+**Observed reversal on `run_20260524_020432` (confirmed mixed cause):**
+Under greedy decoding the fine-tuned model scored EN→UG chrF **14.18** >
+UG→EN chrF **9.38** vs `qwen_zeroshot` **9.96** / **30.10** — directions
+inverted relative to zero-shot. Slurm 2744 falsified chat-marker leak
+as the cause. Slurm 2766 (`debug_ug2en`, n=20) showed **0 %** template
+leak, **60 %** greedy repetition collapse, **40 %** source-unfaithful
+EN hallucinations. After shipping a direction-conditional
+`repetition_penalty=1.15` / `no_repeat_ngram_size=4`, Slurm 2768
+recovers UG→EN chrF to **16.81** (+7.42) while EN→UG stays
+byte-identical at 14.18 — so direction order is **restored**
+(UG→EN > EN→UG) but **compressed** vs zero-shot (gap 2.63 vs 20.14).
+Residual −13.29 chrF gap to zero-shot is **training-shaped**
+(`assistant_only_loss` gradient bias + aggregated `eval_loss`
+checkpoint asymmetry), not missing UG→EN examples — data audit
+confirmed balanced `ug2en`/`en2ug` rows (`PROJECT_REFINEMENT.md` §14).
 
 ---
 
@@ -300,4 +304,4 @@ Preflight artifacts (run once per cluster, not per experiment) live under
 
 ---
 
-*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Experiments 0–2 complete (core §2 table populated). UG→EN regression mechanism: §14 + Slurm 2766 diagnostic; `repetition_penalty` patch shipped, FLORES re-eval pending. MiLiC-Eval deferred to stretch.*
+*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Experiments 0–2 complete (core §2 table populated). UG→EN regression mechanism: §14 + Slurm 2766 diagnostic; direction-conditional `repetition_penalty` patch shipped + re-eval'd (Slurm 2768): UG→EN chrF 9.39 → 16.81, residual −13.29 chrF gap to zero-shot is training-shaped. Zero-shot sanity-gate re-run pending. MiLiC-Eval deferred to stretch.*

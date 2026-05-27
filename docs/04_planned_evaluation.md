@@ -32,7 +32,7 @@ To ensure reproducible and statistically sound claims, we will report the follow
 
 **Single fixed seed (limitation).** Due to strict time and compute constraints, our primary training runs use a single fixed random seed (`flan_seed=42` + `SFTConfig(seed=42, data_seed=42)`). This will be explicitly stated as a limitation in the final report. We do not run multi-seed averages.
 
-**Deterministic decoding.** Translation eval uses `do_sample=False` (greedy). Chat-template paths pass a multi-id stop list + post-decode trim (`§4.7`). For **UG→EN only**, `generate_translation` also applies `repetition_penalty=1.15` and `no_repeat_ngram_size=4` (same values as the CUTE-Llama-P few-shot path) to suppress the greedy `"token loop"` collapse seen on the fine-tuned adapter (Slurm 2766 diagnostic). EN→UG generation is unchanged. Re-eval after this patch is pending (`TODO.md`).
+**Deterministic decoding.** Translation eval uses `do_sample=False` (greedy). Chat-template paths pass a multi-id stop list + post-decode trim (`§4.7`). For **UG→EN only**, `generate_translation` also applies `repetition_penalty=1.15` and `no_repeat_ngram_size=4` (same values as the CUTE-Llama-P few-shot path) to suppress the greedy `"token loop"` collapse seen on the fine-tuned adapter (Slurm 2766 diagnostic). EN→UG generation is unchanged. Slurm 2768 re-eval: `qwen_finetuned` UG→EN chrF 9.385 → 16.8079 (+7.42); EN→UG byte-identical 14.1762 (gate works). Zero-shot sanity-gate re-run pending (`TODO.md`).
 
 **Reproducibility signature.** Run config (`flan_seed`, `test_split_pct`, `eval_steps`, early-stopping patience, …) is frozen in `artifacts/run_config.json`. The exact sacrebleu version is pinned in `requirements.txt`; chrF / BLEU are reported as `sacrebleu.corpus_chrf` / `sacrebleu.corpus_bleu` default settings.
 
@@ -109,6 +109,8 @@ pipeline.
   n=20) showed the fine-tuned adapter often enters a greedy `"The 2 1 1 1 …"`
   loop on UG→EN while zero-shot stays source-anchored. Fix:
   `repetition_penalty=1.15` + `no_repeat_ngram_size=4` in
-  `generate_translation` when the target language is English. Full-corpus
-  impact pending a FLORES re-eval (`TODO.md`). Mechanism and data audit:
-  `PROJECT_REFINEMENT.md` §14.
+  `generate_translation` when the target language is English. Slurm 2768
+  re-eval: `qwen_finetuned` UG→EN chrF 9.385 → 16.8079 (+7.42, +79 %)
+  with EN→UG byte-identical; residual −13.29 chrF gap to zero-shot is
+  training-shaped. Zero-shot sanity-gate re-run pending (`TODO.md`).
+  Mechanism, data audit, and pre/post table: `PROJECT_REFINEMENT.md` §14.

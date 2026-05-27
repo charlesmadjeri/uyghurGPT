@@ -41,10 +41,13 @@
   **0×** leak (C), **0×** wrong-language (A); **12×** repetition collapse
   (`"The 2 1 1 1 …"`), **8×** source-unfaithful EN hallucinations.
   Logged in `PROJECT_REFINEMENT.md` §14.
-- **Follow-up (2026-05-27, code shipped — re-eval pending)** —
-  direction-conditional `repetition_penalty=1.15` +
-  `no_repeat_ngram_size=4` in `generate_translation` when
-  `tgt_lang == "English"`. Full FLORES re-eval tracked in `TODO.md`.
+- **Follow-up (2026-05-27, Slurm 2768)** — direction-conditional
+  `repetition_penalty=1.15` + `no_repeat_ngram_size=4` in
+  `generate_translation` when `tgt_lang == "English"`. Re-eval recovers
+  `qwen_finetuned` UG→EN chrF **9.385 → 16.8079** (+7.42, +79 %); EN→UG
+  byte-identical (gate works). Residual −13.29 chrF gap to zero-shot is
+  training-shaped, not decoding (`PROJECT_REFINEMENT.md` §14 table).
+  Zero-shot sanity-gate re-run still pending — `TODO.md`.
 
 ## Goal (original, retained for context)
 
@@ -204,12 +207,22 @@ Realised pass-criteria on Slurm 2744:
 - `llama_zeroshot` UG→EN chrF: 4.71 → 4.71 (byte-identical) — sanity
   holds.
 - `qwen_finetuned` UG→EN chrF: 9.385 → **9.385** (byte-identical) —
-  the fix is a no-op on this adapter. The regression is real, not a
-  decoding artifact. This is now the headline finding for Task 05.
+  the chat-marker stop/trim fix is a no-op on this adapter. The
+  regression is real, not a chat-marker decoding artifact. This is
+  the headline finding for Task 05 (training-side, not template leak).
 
 Logged in `PROJECT_RESULTS.md` §1 under "2026-05-26 — Slurm 2744
 post-fix re-eval" and falsifies the leak hypothesis recorded in
 `PROJECT_REFINEMENT.md` §13.
+
+**Slurm 2768 update (repetition-penalty re-eval).** Adding the
+direction-conditional `repetition_penalty=1.15` /
+`no_repeat_ngram_size=4` recovers `qwen_finetuned` UG→EN chrF
+**9.385 → 16.8079** (+7.42) on the same adapter while EN→UG stays
+byte-identical at 14.1762. ~7.4 chrF of the original 20.91 chrF
+regression was decoding-shaped (B′ greedy collapse) and is now fixed;
+the residual −13.29 chrF gap to zero-shot is training-shaped
+(see `PROJECT_REFINEMENT.md` §14 table).
 
 ## Validation / success criteria (status)
 
@@ -221,10 +234,12 @@ post-fix re-eval" and falsifies the leak hypothesis recorded in
    of the bucketed analysis.
 2. **Met.** Zero-shot UG→EN numbers reproduced byte-identically (well
    inside ±0.5 chrF) — the fix is strictly additive.
-3. **Path B taken.** The fine-tuned UG→EN chrF did **not** improve;
-   the analysis concludes the regression is genuine Mix-20
-   over-fitting on the generate-English direction. Carried as the
-   headline finding for Task 05, not engineered away.
+3. **Path A + B mixed.** The chat-marker stop/trim fix was a no-op
+   (Slurm 2744), falsifying the leak hypothesis. Adding the
+   direction-conditional repetition controls (Slurm 2768) recovered
+   ~7.4 chrF on UG→EN, leaving a −13.29 chrF residual gap to zero-shot
+   that is genuine training-side regression. Both findings are carried
+   into Task 05, not engineered away.
 4. **Met.** EN→UG chrF / BLEU and C4 PPL are byte-identical to the
    May-24 cells (Slurm 2744). The decoding fix touched only
    `generate_translation`; the FLORES EN→UG generation, WCM scoring,

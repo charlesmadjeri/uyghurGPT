@@ -520,13 +520,41 @@ the few-shot base-LM path. EN→UG (Uyghur generation) is unchanged.
 
 Guarded by `tests/test_evaluation_translation.py::test_chat_generate_extra_kwargs_*`.
 
-**Pending:** full FLORES re-eval of `qwen_finetuned` on
-`run_20260524_020432` (Slurm TBD). Validation contract:
+### Slurm 2768 — post-fix re-eval on `run_20260524_020432`
 
-- `qwen_zeroshot` / `llama_zeroshot` UG→EN chrF within ±0.5 of Slurm
-  2749 cells (30.10 / 4.71).
-- `qwen_finetuned` UG→EN chrF reported before/after; any residual gap
-  after B′ removal is attributed to the training mechanism above.
+Same adapter as Slurm 2744 / 2715 / 2650; only delta is the repetition
+controls above.
+
+| Metric | Pre-fix (Slurm 2744) | Post-fix (Slurm 2768) | Δ |
+|--------|----------------------|------------------------|---|
+| FLORES EN→UG chrF | 14.1762 | 14.1762 | **0.0** (gate works) |
+| FLORES UG→EN chrF | **9.385** | **16.8079** | **+7.42** (+79 %) |
+| FLORES EN→UG BLEU | 0.0354 | 0.0354 | 0.0 |
+| FLORES UG→EN BLEU | 0.1387 | 0.1794 | +0.04 |
+| WCM Uyghur acc. | 21.00 % | 21.00 % | 0.0 (LL path) |
+| C4 EN PPL | 16.1667 | 16.1667 | 0.0 (no generation) |
+
+**Interpretation.** The repetition penalty fixes the syntactic
+collapse (B′ greedy `"The 2 1 1 1 …"` loop, 12 / 20 on Slurm 2766) but
+leaves UG→EN at **16.81 chrF**, still **−13.29 chrF** below
+`qwen_zeroshot` (30.10). The split:
+
+- ~7.42 chrF of the 20.91 chrF regression was decoding-shaped
+  (B′ repetition collapse) → fixed by Slurm 2768.
+- ~13.29 chrF residual is **training-shaped** (B″ source-unfaithful
+  English hallucinations + the gradient/`eval_loss` checkpoint
+  asymmetry above) → unchanged by the decoder fix.
+
+Direction asymmetry is **restored** (UG→EN > EN→UG: 16.81 vs 14.18,
+gap +2.63) but **compressed** vs zero-shot (gap +20.14). Pre-registered
+**Minimum** criterion is met in EN→UG (+4.22 vs zero-shot); **Target**
+(+5 chrF in *both* directions) is not met — UG→EN remains a regression.
+
+**Sanity gate (still open).** Slurm 2768 was variant-scoped to
+`qwen_finetuned` (`run_config.json eval_variants`), so `qwen_zeroshot` /
+`llama_zeroshot` UG→EN under the new decoder is not yet measured.
+Expected near no-op per Slurm 2766 (0 % collapse on zero-shot), but a
+small zero-shot re-run is the cheapest confirmation.
 
 ---
 
@@ -547,7 +575,7 @@ Guarded by `tests/test_evaluation_translation.py::test_chat_generate_extra_kwarg
 | 11 | Pytest contract suite for the data split | Regression prevention | Locks in the no-leakage invariant + guards against shipped smoke defaults |
 | 12 | Experiment 0 for zero-shot eval; experiment 1 eval = `qwen_finetuned` only | Compute / workflow | Zero-shot FLORES/WCM/C4 numbers are invariant across fine-tunes; re-running them on every experiment-1 eval wasted ~25 min per variant. WCM loader fixed to `minority/ug.txt` (HF `split=test` was Chinese-only, no labels). |
 | 13 | FLORES stop-token list + post-decode trim; WCM constrained log-likelihood scoring | Decoding/scoring correctness | Stop/trim + WCM constrained-LL fixed; Slurm 2744 falsified leak as cause of UG→EN chrF regression. |
-| 14 | Data audit + Slurm 2766 diagnostic + UG→EN-only `repetition_penalty` / `no_repeat_ngram_size` in `generate_translation` | UG→EN regression mechanism | Balanced `ug2en`/`en2ug` data ruled out; FT collapse = repetition loop + source-unfaithful EN hallucinations; gradient/eval_loss asymmetry explains training. Re-eval pending. |
+| 14 | Data audit + Slurm 2766 diagnostic + UG→EN-only `repetition_penalty` / `no_repeat_ngram_size` in `generate_translation`; Slurm 2768 re-eval | UG→EN regression mechanism + partial fix | Balanced `ug2en`/`en2ug` data ruled out. Slurm 2768 recovers UG→EN chrF 9.39 → 16.81 (+7.42); EN→UG byte-identical (gate works). Residual −13.29 chrF gap to zero-shot is training-shaped (B″ hallucinations + gradient/`eval_loss` checkpoint asymmetry), not decoding. |
 
 ---
 

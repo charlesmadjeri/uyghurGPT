@@ -208,6 +208,39 @@ the numbers moved**. It has three sections:
 - **Sanity gate:** `qwen_zeroshot` UG→EN must stay within ±0.5 chrF of
   30.10 (`run_20260526_223852`).
 
+### 2026-05-27 — `run_20260524_020432` (Slurm 2768) — UG→EN repetition-penalty re-eval
+
+> Same adapter as Slurm 2744; only change is the direction-conditional
+> repetition controls (`repetition_penalty=1.15`,
+> `no_repeat_ngram_size=4`) on English-target chat decoding. Scope:
+> `qwen_finetuned` only (`run_config.json eval_variants`); zero-shot
+> variants were **not** re-run in this job.
+
+- **+** FLORES UG→EN chrF: **9.385 → 16.8079** (+7.42, +79 % relative);
+  BLEU **0.1387 → 0.1794**. The B′ greedy `"The 2 1 1 1 …"` collapse
+  (12 / 20 in Slurm 2766) is largely suppressed.
+- **=** FLORES EN→UG chrF: **14.1762 → 14.1762** (byte-identical);
+  BLEU **0.0354 → 0.0354**. Penalty is gated to `tgt_lang == "English"`,
+  so the Uyghur-target decode is untouched — confirms the gate works.
+- **=** WCM `qwen_finetuned`: **21.00 %** (63 / 300, constrained-LL) and
+  C4 PPL **16.1667** byte-identical. Neither path uses
+  `generate_translation`.
+- **+** Direction asymmetry **restored** (fine-tune now also has
+  UG→EN > EN→UG: 16.81 vs 14.18, gap +2.63) but **compressed** vs
+  zero-shot (30.10 vs 9.96, gap +20.14). Residual UG→EN gap to
+  zero-shot: **−13.29 chrF** → §14 mechanism account stands: B′
+  collapse explained ~7.4 chrF of the 20.91 chrF regression; remaining
+  loss is B″ source-unfaithful hallucinations + the gradient /
+  `eval_loss` checkpoint asymmetry, not decoding.
+- **Pre-registered Minimum (≥1 direction beats zero-shot):** met
+  (EN→UG +4.22). **Target (+5 chrF in both directions):** still not met
+  — UG→EN remains a regression vs zero-shot.
+- **Sanity gate status: not yet measured.** Re-eval was variant-scoped
+  to `qwen_finetuned`. Slurm 2766 showed 0 % collapse on `qwen_zeroshot`
+  (20 / 20 source-anchored EN), so the penalty is expected to be a near
+  no-op there; a small zero-shot re-run is the cheapest confirmation
+  (see `TODO.md`).
+
 ### 2026-05-27 — Slurm 2751 (`debug_ug2en`) — failed at import
 
 - `scripts/debug_ug2en.py` crashed immediately:
@@ -228,7 +261,7 @@ the source run for each populated cell is noted under the table.
 |---------|-------------------|------------|-------------------|------------|------------------|-----------|
 | `qwen_zeroshot`   | 9.963       | 0.2389 | **30.0957** | 4.2854 | 6.33 % (19 / 300, constrained-LL)      | 16.5949 |
 | `llama_zeroshot`  | 0.8447      | 0.449  | 4.705       | 1.3592 | 3.00 % (9 / 300, constrained-LL)       | **13.6891** |
-| `qwen_finetuned`  | **14.1762** | 0.0354 | 9.385       | 0.1387 | **21.00 %** (63 / 300, constrained-LL) | 16.1667 |
+| `qwen_finetuned`  | **14.1762** | 0.0354 | 16.8079     | 0.1794 | **21.00 %** (63 / 300, constrained-LL) | 16.1667 |
 | `cute_llama_p`    | 6.8773      | 0.2638 | 23.0881     | 1.7748 | 15.33 % (46 / 300, base_lm constrained-LL) | **13.0148** |
 
 Sources for populated cells (latest measurement per metric):
@@ -237,7 +270,7 @@ Sources for populated cells (latest measurement per metric):
 |---|---|---|---|
 | `qwen_zeroshot`  | `run_20260526_223852` (Slurm 2749) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
 | `llama_zeroshot` | `run_20260526_223852` (Slurm 2749) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
-| `qwen_finetuned` | `run_20260524_020432` (Slurm 2744) | `run_20260524_020432` (Slurm 2744, constrained-LL) | `run_20260524_020432` (Slurm 2744) |
+| `qwen_finetuned` | `run_20260524_020432` (Slurm 2768, rep-penalty UG→EN) | `run_20260524_020432` (Slurm 2744, constrained-LL) | `run_20260524_020432` (Slurm 2744) |
 | `cute_llama_p`   | `run_20260526_224102` (Slurm 2750) | `run_20260526_224102` (Slurm 2750, base_lm constrained-LL) | `run_20260526_224102` (Slurm 2750) |
 
 ### Analysis (current best estimate)
@@ -247,17 +280,21 @@ Sources for populated cells (latest measurement per metric):
   (0.84). The pre-registered **Minimum** criterion (fine-tuned beats
   zero-shot in ≥1 direction) is met. The pre-registered **Target**
   criterion (+5 chrF in *both* directions) is not — see UG→EN below.
-- **UG→EN: real training-side regression, not a template leak.**
-  `qwen_finetuned` drops to **9.39 chrF** vs `qwen_zeroshot` 30.29.
-  Slurm 2744 falsified chat-marker leak; Slurm 2766 (n=20) shows **0 %
-  leak** but **60 %** greedy repetition collapse (`"The 2 1 1 1 …"`) and
-  **40 %** source-unfaithful English hallucinations. Data audit (§14)
-  confirmed balanced `ug2en`/`en2ug` rows — mechanism is
-  `assistant_only_loss` gradient bias toward Uyghur output + aggregated
-  `eval_loss` early stopping, not missing UG→EN examples. Direction-
-  conditional `repetition_penalty` is shipped; **full FLORES re-eval
-  pending** to measure how much chrF recovers once B′ is suppressed.
-  C4 PPL gap only +0.4 → not catastrophic forgetting.
+- **UG→EN: real training-side regression, partly masked by greedy
+  repetition collapse.** `qwen_finetuned` UG→EN was **9.39 chrF** under
+  greedy decoding vs `qwen_zeroshot` 30.10. The repetition penalty
+  shipped after Slurm 2766 recovers the chrF to **16.81** (Slurm 2768)
+  — confirming B′ greedy `"The 2 1 1 1 …"` collapse accounted for
+  ~7.4 chrF of the 20.91 chrF regression. The remaining **−13.29
+  chrF** residual gap to zero-shot matches the §14 training-side
+  mechanism: `assistant_only_loss` biases gradients toward Uyghur
+  output and aggregated `eval_loss` early stopping picks an
+  EN→UG-optimised checkpoint, so the adapter loses source faithfulness
+  on UG→EN (B″ hallucinations) even when generation no longer collapses
+  into a loop. Slurm 2744 falsified chat-marker leak; data audit (§14)
+  ruled out missing UG→EN rows. C4 PPL gap only +0.4 → not catastrophic
+  forgetting. **Direction asymmetry is restored** (UG→EN > EN→UG, +2.63
+  chrF gap) but **compressed** vs zero-shot (+20.14 gap).
 - **WCM: fine-tune beats zero-shot by ×3.3 under apples-to-apples
   scoring, but the absolute level stays well below random for both
   zero-shot variants.** All three variants now scored under
@@ -283,19 +320,21 @@ Sources for populated cells (latest measurement per metric):
 - **CUTE-Llama-P vs Qwen Mix-20 (research question).** On the metrics
   this project optimizes for, **QLoRA instruction tuning wins**:
   EN→UG chrF +7.30 (`qwen_ft` 14.18 vs `cute_llama_p` 6.88), WCM
-  +5.67 pp (21.00 % vs 15.33 %). CUTE-Llama-P's only win in the core
-  table is UG→EN chrF (+13.70 over `qwen_ft`), and even there it
-  underperforms `qwen_zeroshot` (−7.01 chrF). The published baseline
-  does not rescue the fine-tuned model's generate-English regression.
+  +5.67 pp (21.00 % vs 15.33 %). CUTE-Llama-P still leads UG→EN chrF
+  (23.09 vs `qwen_ft` 16.81 = +6.28 after the repetition fix; was
+  +13.70 pre-fix). Even with the recovery, neither fine-tune /
+  baseline matches `qwen_zeroshot` UG→EN (30.10), confirming the
+  generate-English regression is an instruction-tuning artefact not
+  rescued by the published baseline.
 
-### Outstanding (core table populated — one re-eval pending)
+### Outstanding (core table populated — sanity-gate re-run + reporting)
 
-All four variant rows in §2 are populated at the **pre–repetition-penalty**
-protocol. Remaining:
+All four variant rows in §2 now reflect the **post–repetition-penalty**
+protocol for the UG→EN cell. Remaining:
 
-1. **`qwen_finetuned` FLORES re-eval** after UG→EN `repetition_penalty`
-   (code shipped; Slurm job not yet run). May move UG→EN chrF off 9.39;
-   EN→UG must be checked for regression. See `TODO.md`.
+1. **`qwen_zeroshot` UG→EN sanity-gate re-run** under the new decoder
+   (must stay within ±0.5 chrF of 30.10). Expected to be a near no-op
+   per Slurm 2766 (0 % collapse on zero-shot), but unconfirmed.
 2. **Task 04** — `scripts/aggregate_results.py` +
    `results/reports/consolidated_results.json`.
 3. **(Optional) sacrebleu `--paired-bs` CIs** — `docs/04_planned_evaluation.md`
