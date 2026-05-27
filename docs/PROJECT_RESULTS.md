@@ -177,6 +177,37 @@ the numbers moved**. It has three sections:
   FT UG→EN regression is not explained by the CUTE baseline being
   stronger on that direction.
 
+### 2026-05-27 — Slurm 2766 (`debug_ug2en`, n=20) — mechanism diagnostic
+
+> `scripts/debug_ug2en.py` on `run_20260524_020432`'s adapter +
+> `qwen_zeroshot` comparison. Log: `results/debug/slurm_ug2en_2766.out`.
+
+- **=** **0×** `A_wrong_language_uyghur` and **0×**
+  `C_decoding_or_template_leak` on both variants → chat stop/trim path
+  is sound; §13 leak hypothesis stays falsified.
+- **−** `qwen_finetuned` on 20-sentence slice: **12×
+  `B_garbled_or_weak_english`** (greedy `"The 2 1 1 1 …"` loop to
+  `max_new_tokens`), **8× `ok_english`** (fluent EN **not** translating
+  the Uyghur source). mean chrF **5.56** vs `qwen_zeroshot` **30.33**
+  (all 20 source-anchored, however wrong).
+- **Implication.** Regression is **training-shaped** (gradient /
+  `eval_loss` checkpoint bias + FLAN-style EN completions), not missing
+  UG→EN rows in `shared/data.py` (audit confirmed 1:1 `en2ug`/`ug2en`).
+  See `PROJECT_REFINEMENT.md` §14.
+
+### 2026-05-27 — decoding follow-up (option 1, code only — re-eval pending)
+
+> `generate_translation` now applies `repetition_penalty=1.15` +
+> `no_repeat_ngram_size=4` when `tgt_lang == "English"` only (EN→UG
+> unchanged). Targets the B′ repetition collapse seen on Slurm 2766.
+
+- **Pending** full exp-1 FLORES re-eval on `run_20260524_020432`
+  (`python3 scripts/push.py --server ju-compute-server --experiment 1
+  --mode eval --run-id 20260524_020432 --time 6:00:00`). Update §2
+  `qwen_finetuned` UG→EN cell in the **same commit** as the pull.
+- **Sanity gate:** `qwen_zeroshot` UG→EN must stay within ±0.5 chrF of
+  30.10 (`run_20260526_223852`).
+
 ### 2026-05-27 — Slurm 2751 (`debug_ug2en`) — failed at import
 
 - `scripts/debug_ug2en.py` crashed immediately:
@@ -216,15 +247,17 @@ Sources for populated cells (latest measurement per metric):
   (0.84). The pre-registered **Minimum** criterion (fine-tuned beats
   zero-shot in ≥1 direction) is met. The pre-registered **Target**
   criterion (+5 chrF in *both* directions) is not — see UG→EN below.
-- **UG→EN: real Mix-20 over-fitting, not a decoding artifact.**
-  `qwen_finetuned` drops to **9.39 chrF** vs `qwen_zeroshot` 30.29. The
-  May-26 post-fix re-eval (Slurm 2744) confirmed the chat-marker fix
-  was a no-op on this adapter — the regression is genuine. Mix-20 over-
-  anchors on the generate-Uyghur direction at the cost of generate-
-  English fluency, despite the 20 % FLAN buffer. C4 PPL gap is only
-  +0.4 (16.59 → 16.17), so this is task-shaped, not catastrophic-
-  forgetting-shaped. Reported as the headline finding rather than
-  engineered away.
+- **UG→EN: real training-side regression, not a template leak.**
+  `qwen_finetuned` drops to **9.39 chrF** vs `qwen_zeroshot` 30.29.
+  Slurm 2744 falsified chat-marker leak; Slurm 2766 (n=20) shows **0 %
+  leak** but **60 %** greedy repetition collapse (`"The 2 1 1 1 …"`) and
+  **40 %** source-unfaithful English hallucinations. Data audit (§14)
+  confirmed balanced `ug2en`/`en2ug` rows — mechanism is
+  `assistant_only_loss` gradient bias toward Uyghur output + aggregated
+  `eval_loss` early stopping, not missing UG→EN examples. Direction-
+  conditional `repetition_penalty` is shipped; **full FLORES re-eval
+  pending** to measure how much chrF recovers once B′ is suppressed.
+  C4 PPL gap only +0.4 → not catastrophic forgetting.
 - **WCM: fine-tune beats zero-shot by ×3.3 under apples-to-apples
   scoring, but the absolute level stays well below random for both
   zero-shot variants.** All three variants now scored under
@@ -255,19 +288,18 @@ Sources for populated cells (latest measurement per metric):
   underperforms `qwen_zeroshot` (−7.01 chrF). The published baseline
   does not rescue the fine-tuned model's generate-English regression.
 
-### Outstanding (core table **complete** — 2026-05-27)
+### Outstanding (core table populated — one re-eval pending)
 
-All four variant rows in §2 are populated. Remaining work is report
-machinery and optional depth, not missing Slurm numbers:
+All four variant rows in §2 are populated at the **pre–repetition-penalty**
+protocol. Remaining:
 
-1. **Task 04** — `scripts/aggregate_results.py` + machine-readable
-   `results/reports/consolidated_results.json` (see
-   `docs/tasks/04_consolidated_results_table.md`).
-2. **(Optional) `debug_ug2en.py` re-submit** — Slurm 2751 failed on
-   import (fixed in-repo); per-sentence failure-mode buckets for Task
-   05. See `TODO.md`.
-3. **(Optional) sacrebleu `--paired-bs` CIs** — tracked in
-   `docs/04_planned_evaluation.md` §4.3.
+1. **`qwen_finetuned` FLORES re-eval** after UG→EN `repetition_penalty`
+   (code shipped; Slurm job not yet run). May move UG→EN chrF off 9.39;
+   EN→UG must be checked for regression. See `TODO.md`.
+2. **Task 04** — `scripts/aggregate_results.py` +
+   `results/reports/consolidated_results.json`.
+3. **(Optional) sacrebleu `--paired-bs` CIs** — `docs/04_planned_evaluation.md`
+   §4.3.
 
 ---
 

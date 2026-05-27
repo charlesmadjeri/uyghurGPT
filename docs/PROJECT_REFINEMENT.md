@@ -443,6 +443,93 @@ methodology bug but a substantive finding.
 
 ---
 
+## 14. UG→EN Regression Mechanism (2026-05-27 audit + decoding follow-up)
+
+### Training-data audit (option 4) — **ruled out missing UG→EN**
+
+`shared/data.py` expands every CUTE-P parallel pair into **two** rows with
+identical chat templates:
+
+- `en2ug`: `_translation_messages(en, ug, "English", "Uyghur")`
+- `ug2en`: `_translation_messages(ug, en, "Uyghur", "English")`
+
+Pair-level splitting (`_split_pair_indices`) runs **before** this
+expansion, so both directions of a sentence always share the same
+train/test split. After `train_ds.shuffle(seed=seed)` the directions are
+interleaved — there is no "first half EN→UG only" ordering and no
+direction-specific prompt wording.
+
+**Mix-20 row-level composition** (100 k CUTE-P pairs, default config):
+
+| Bucket | Rows | Share |
+|--------|------|-------|
+| EN→UG translation | 100 000 | 44.4 % |
+| UG→EN translation | 100 000 | 44.4 % |
+| FLAN EN-only (`_flan_messages`) | 25 000 | 11.1 % |
+
+The config label "Mix-20" is computed at **pair** level
+(`_flan_count_for_mix`); after bidirectional expansion the FLAN dilution
+is ~11 %, not 20 %. Under-coverage of UG→EN examples is **not** the cause
+of the regression.
+
+### Mechanism — gradient + checkpoint asymmetry (training-side)
+
+With `assistant_only_loss=True` (`shared/training.py`), backprop sees only
+the assistant span:
+
+- **EN→UG rows:** assistant = Uyghur → high per-token CE under Qwen →
+  **large gradients**.
+- **UG→EN rows:** assistant = English → already low CE → **small
+  gradients**.
+
+The optimizer therefore updates LoRA weights primarily toward
+"produce Uyghur under the chat template". Early stopping and
+`load_best_model_at_end` use a single aggregated **`eval_loss`** over the
+mixed test split; because EN→UG CE dominates the average, UG→EN can
+worsen while the headline `eval_loss` still improves — the checkpoint
+selected at step 1 550 is EN→UG-optimised.
+
+C4 PPL stable (16.59 → 16.17) because base English weights are untouched;
+the model still *knows* English but no longer *translates* from Uyghur
+input reliably.
+
+### Slurm 2766 — `debug_ug2en.py` (n=20) — **falsifies template leak, confirms collapse modes**
+
+Per-sentence buckets on `run_20260524_020432`'s adapter:
+
+| Variant | Failure modes (n=20) | mean chrF |
+|---------|----------------------|-----------|
+| `qwen_finetuned` | 12× garbled (B), 8× ok_english | **5.56** |
+| `qwen_zeroshot` | 20× ok_english | **30.33** |
+
+- **0×** wrong-language Uyghur (A) and **0×** chat-marker leak (C) on
+  either variant → §13 stop-token / trim fix is working; leak hypothesis
+  remains falsified.
+- **B′ (12/20):** greedy loop `"The 2 1 1 1 …"` to `max_new_tokens=256`.
+- **B″ (8/20):** fluent English **hallucinations** unrelated to the
+  Uyghur source (generic news / encyclopaedic prose — FLAN-shaped).
+
+Zero-shot outputs are wrong but **source-anchored**; the FT adapter lost
+source faithfulness on UG→EN, not English fluency per se.
+
+### Decoding follow-up (option 1) — direction-conditional repetition controls
+
+`generate_translation` now passes `repetition_penalty=1.15` and
+`no_repeat_ngram_size=4` **only when `tgt_lang == "English"`**, matching
+the few-shot base-LM path. EN→UG (Uyghur generation) is unchanged.
+
+Guarded by `tests/test_evaluation_translation.py::test_chat_generate_extra_kwargs_*`.
+
+**Pending:** full FLORES re-eval of `qwen_finetuned` on
+`run_20260524_020432` (Slurm TBD). Validation contract:
+
+- `qwen_zeroshot` / `llama_zeroshot` UG→EN chrF within ±0.5 of Slurm
+  2749 cells (30.10 / 4.71).
+- `qwen_finetuned` UG→EN chrF reported before/after; any residual gap
+  after B′ removal is attributed to the training mechanism above.
+
+---
+
 ## Summary Table
 
 | # | Change | Direction | Primary Reason |
@@ -459,7 +546,8 @@ methodology bug but a substantive finding.
 | 10 | Seeded RNGs + early stopping + best-checkpoint + native assistant-only loss | Reproducibility + waste reduction | Final adapter = lowest `eval_loss` checkpoint, not the last; runs are deterministic from `run_config.json` |
 | 11 | Pytest contract suite for the data split | Regression prevention | Locks in the no-leakage invariant + guards against shipped smoke defaults |
 | 12 | Experiment 0 for zero-shot eval; experiment 1 eval = `qwen_finetuned` only | Compute / workflow | Zero-shot FLORES/WCM/C4 numbers are invariant across fine-tunes; re-running them on every experiment-1 eval wasted ~25 min per variant. WCM loader fixed to `minority/ug.txt` (HF `split=test` was Chinese-only, no labels). |
-| 13 | FLORES stop-token list + post-decode trim; WCM constrained log-likelihood scoring | Decoding/scoring correctness | UG→EN chrF collapse 30.29 → 9.38 was a chat-marker leak past `<|im_end|>` (asymmetric because the noise is Latin-script — invisible to chrF on Arabic-script EN→UG, catastrophic on Latin-script UG→EN). WCM below-chance accuracy was free-form generation + substring match instead of constrained scoring. Both fixed without retraining the adapter. |
+| 13 | FLORES stop-token list + post-decode trim; WCM constrained log-likelihood scoring | Decoding/scoring correctness | Stop/trim + WCM constrained-LL fixed; Slurm 2744 falsified leak as cause of UG→EN chrF regression. |
+| 14 | Data audit + Slurm 2766 diagnostic + UG→EN-only `repetition_penalty` / `no_repeat_ngram_size` in `generate_translation` | UG→EN regression mechanism | Balanced `ug2en`/`en2ug` data ruled out; FT collapse = repetition loop + source-unfaithful EN hallucinations; gradient/eval_loss asymmetry explains training. Re-eval pending. |
 
 ---
 

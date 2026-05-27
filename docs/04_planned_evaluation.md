@@ -22,7 +22,7 @@ Our primary benchmark for translation is the FLORES+ devtest set, which contains
 To evaluate downstream Uyghur language understanding, we use the WCM-v2 dataset (`hfl/wcm-v2` → `minority/ug.txt`, 300 rows). We classify by **constrained log-likelihood scoring**: for each candidate label *l* in the dataset's label set, the model scores `log P(l | chat_prompt(text))` under teacher forcing, and the prediction is `argmax_l`. This guarantees the prediction is always one of the legal labels and removes the free-form-generation failure mode that produced below-random results on `run_20260524_020432` (see `PROJECT_REFINEMENT.md` §13). The primary metric is **Accuracy**. Macro-F1 is not currently computed; if it is needed for the final report it will be added on top of the same prediction array, with no change to the inference path.
 
 * **English Perplexity (Catastrophic Forgetting Check)**
-To ensure that tuning on Uyghur data does not destroy the model's core English capabilities, we evaluate perplexity on a held-out set of 1,000 English sentences from `allenai/c4/en` (streaming, validation split). We compute `model.eval()` perplexity before and after fine-tuning. A substantial relative increase (> 20 %) flags catastrophic forgetting. The C4 PPL gap on `run_20260524_020432` (16.59 → 16.17) was the diagnostic that ruled out forgetting as the cause of the UG→EN regression — the regression turned out to be a decoding bug.
+To ensure that tuning on Uyghur data does not destroy the model's core English capabilities, we evaluate perplexity on a held-out set of 1,000 English sentences from `allenai/c4/en` (streaming, validation split). We compute `model.eval()` perplexity before and after fine-tuning. A substantial relative increase (> 20 %) flags catastrophic forgetting. The C4 PPL gap on `run_20260524_020432` (16.59 → 16.17) ruled out forgetting; the UG→EN chrF regression is training-shaped (see `PROJECT_REFINEMENT.md` §14), not a C4-forgetting artifact.
 
 * **MiLiC-Eval (Stretch Benchmark)**
 As a stretch goal, we may evaluate the models on the 9-task bilingual MiLiC-Eval benchmark. Deferred to the final report; not part of the design-stage scope.
@@ -32,15 +32,26 @@ To ensure reproducible and statistically sound claims, we will report the follow
 
 **Single fixed seed (limitation).** Due to strict time and compute constraints, our primary training runs use a single fixed random seed (`flan_seed=42` + `SFTConfig(seed=42, data_seed=42)`). This will be explicitly stated as a limitation in the final report. We do not run multi-seed averages.
 
-**Deterministic decoding.** All translation evaluation uses `do_sample=False` (greedy), making the per-sentence hypothesis a deterministic function of `(model_weights, prompt, stop_token_set)`. Two consecutive evals of the same checkpoint reproduce byte-identical FLORES chrF / BLEU and C4 PPL (verified between `run_20260524_020432` (Slurm 2650) and the 2026-05-26 backfill (Slurm 2715), see `PROJECT_RESULTS.md`).
+**Deterministic decoding.** Translation eval uses `do_sample=False` (greedy). Chat-template paths pass a multi-id stop list + post-decode trim (`§4.7`). For **UG→EN only**, `generate_translation` also applies `repetition_penalty=1.15` and `no_repeat_ngram_size=4` (same values as the CUTE-Llama-P few-shot path) to suppress the greedy `"token loop"` collapse seen on the fine-tuned adapter (Slurm 2766 diagnostic). EN→UG generation is unchanged. Re-eval after this patch is pending (`TODO.md`).
 
 **Reproducibility signature.** Run config (`flan_seed`, `test_split_pct`, `eval_steps`, early-stopping patience, …) is frozen in `artifacts/run_config.json`. The exact sacrebleu version is pinned in `requirements.txt`; chrF / BLEU are reported as `sacrebleu.corpus_chrf` / `sacrebleu.corpus_bleu` default settings.
 
 **Paired bootstrap (deferred).** sacrebleu's `--paired-bs` (n=1000) was in the original plan as a significance test on chrF deltas. It is currently **not** wired into the eval pipeline (`shared/evaluation.py` reports point estimates only). For the design presentation it is sufficient to report point chrF / BLEU; if statistical significance becomes a graded requirement we add a single `_paired_bootstrap_chrF` helper over the saved per-sentence hypotheses without rerunning the model. Tracked alongside the consolidated-results task in `docs/tasks/04_consolidated_results_table.md`.
 
 
-## 4.4 Translation Direction Asymmetry (Expected Behavior)
-We explicitly note an expected performance gap between translation directions. The EN→UG direction requires the model to generate fluent, morphologically correct Uyghur (a significantly harder task). Conversely, UG→EN requires understanding Uyghur but generating English, a language the base model already masters. So we expect EN→UG scores to be substantially lower than UG→EN scores. This asymmetry is an inherent property of text generation in low-resource target languages and does not constitute a failure of the fine-tuning process.
+## 4.4 Translation Direction Asymmetry (Expected vs. Observed)
+
+**Expected (zero-shot).** EN→UG is harder than UG→EN because the model must
+*generate* fluent Uyghur; UG→EN only requires generating English, which the
+base instruct model already handles. We therefore expect zero-shot EN→UG chrF
+to be lower than UG→EN chrF.
+
+**Observed (fine-tuned, Mix-20).** The directions **invert**: `qwen_finetuned`
+wins EN→UG (+4.22 chrF vs zero-shot) but **regresses** UG→EN (30.29 → 9.39).
+This is not the generic script-difficulty asymmetry above — it is a
+training-side bias (`assistant_only_loss` + aggregated `eval_loss`
+checkpointing; balanced `ug2en`/`en2ug` data confirmed in
+`PROJECT_REFINEMENT.md` §14). Report as the headline finding for Task 05.
 
 
 ## 4.5 Pre-Registered Success Criteria
@@ -93,3 +104,11 @@ the short version that belongs in the evaluation plan is:
 Both fixes are inference-only and do not require retraining; the same
 `run_20260524_020432` adapter is re-evaluated against the patched
 pipeline.
+
+- **UG→EN repetition collapse (2026-05-27).** Slurm 2766 (`debug_ug2en`,
+  n=20) showed the fine-tuned adapter often enters a greedy `"The 2 1 1 1 …"`
+  loop on UG→EN while zero-shot stays source-anchored. Fix:
+  `repetition_penalty=1.15` + `no_repeat_ngram_size=4` in
+  `generate_translation` when the target language is English. Full-corpus
+  impact pending a FLORES re-eval (`TODO.md`). Mechanism and data audit:
+  `PROJECT_REFINEMENT.md` §14.

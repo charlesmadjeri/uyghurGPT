@@ -74,19 +74,17 @@ UG→EN translation is expected to score significantly higher than EN→UG on ch
 - If EN→UG chrF is low in absolute terms, compare the *relative gain* over zero-shot (the delta matters more than the absolute score)
 - Consider a qualitative analysis: show 3–5 example outputs in both directions to illustrate where the model succeeds and fails
 
-**Confounder caught on `run_20260524_020432` (do not mis-read the table):**
-The first fine-tune run produced an *apparent* reversal of this
-asymmetry: `qwen_finetuned` scored EN→UG chrF 14.18 > UG→EN chrF 9.38
-(the table in `PROJECT_RESULTS.md` 2026-05-24). That reversal was a
-**decoding artifact, not a real change in the underlying asymmetry**:
-the adapter leaked `<|im_end|>` past the natural answer, and the
-trailing Latin-script garbage tanks chrF on the Latin-script UG→EN
-reference while being almost invisible on the Arabic-script EN→UG
-reference. The mechanism + fix (stop-token list + post-decode trim) is
-documented in `PROJECT_REFINEMENT.md` §13; the post-fix re-eval against
-the same adapter is the data point that confirms whether the genuine
-asymmetry returns (UG→EN > EN→UG) or whether Mix-20 has a real
-over-fitting effect on the generate-English side.
+**Observed reversal on `run_20260524_020432` (confirmed real, not a leak):**
+The fine-tuned model scores EN→UG chrF **14.18** > UG→EN chrF **9.38**
+vs `qwen_zeroshot` **9.96** / **30.10** — directions invert relative to
+zero-shot. Slurm 2744 falsified chat-marker leak as the cause (chrF
+byte-identical after stop/trim fix). Slurm 2766 (`debug_ug2en`, n=20)
+showed **0 %** template leak and **60 %** greedy repetition collapse on
+UG→EN. Data audit confirmed balanced `ug2en`/`en2ug` training rows
+(`PROJECT_REFINEMENT.md` §14). The headline finding is **training-shaped**
+(`assistant_only_loss` gradient bias + aggregated `eval_loss` checkpointing),
+not missing UG→EN examples. A direction-conditional `repetition_penalty`
+is shipped; full-corpus FLORES re-eval is pending (`TODO.md`).
 
 ---
 
@@ -302,4 +300,4 @@ Preflight artifacts (run once per cluster, not per experiment) live under
 
 ---
 
-*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Experiment 0: zero-shot baselines (eval once). Experiment 1: Qwen2.5-7B-Instruct QLoRA Mix-20 on FLORES-200 + WCM-v2 (`minority/ug.txt`). Experiment 2: CUTE-Llama-P few-shot baseline (eval only, base-LM continuation prompt). EN↔UG asymmetry documented as expected outcome; the apparent reversal on `run_20260524_020432` was a chat-marker decoding bug, see `PROJECT_REFINEMENT.md` §13. MiLiC-Eval deferred to stretch. All stretch goals gated behind core completion. **Compute update:** MIG slice upgraded from `1g.10gb` (~10 GB) to ~24 GB — bf16 LoRA now feasible; QLoRA remains default; thresholds and headroom revised accordingly.*
+*Last updated: May 2026 — scope refined per `PROJECT_REFINEMENT.md`. Experiments 0–2 complete (core §2 table populated). UG→EN regression mechanism: §14 + Slurm 2766 diagnostic; `repetition_penalty` patch shipped, FLORES re-eval pending. MiLiC-Eval deferred to stretch.*
