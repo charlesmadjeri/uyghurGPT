@@ -46,6 +46,6 @@ ships independently and is *not* a prerequisite for any main task.
 | # | Task | File |
 |---|------|------|
 | B1 | LLaMA-3.1-8B-Instruct Mix-20 QLoRA fine-tune (experiment 3) | [`bonus/01_experiment_3_llama_mix20_finetune.md`](bonus/01_experiment_3_llama_mix20_finetune.md) |
-| B2 | Qwen Mix-{0, 10, 50} catastrophic-forgetting ablation (experiment 1 reruns) | [`bonus/02_qwen_mix_ablation.md`](bonus/02_qwen_mix_ablation.md) |
+| B2 | **Mix-50 retrain active** (Mix-0/10 deferred); training-side UG→EN fix per §14; A1 beams paused | [`bonus/02_qwen_mix_ablation.md`](bonus/02_qwen_mix_ablation.md) |
 | B3 | MiLiC-Eval 9-task bilingual benchmark add-on (experiment 4) | [`bonus/03_milic_eval.md`](bonus/03_milic_eval.md) |
 | B4 | Qwen2.5-7B 5-shot in-context baseline (experiment 5) | [`bonus/04_qwen_5shot_baseline.md`](bonus/04_qwen_5shot_baseline.md) |

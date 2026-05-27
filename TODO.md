@@ -3,33 +3,86 @@
 Short-lived, actionable items. Pop entries as they land; delete this file
 when empty.
 
-## A1 — Beam search UG→EN (eval-only)
+## Priority — Mix-50 retrain (training-side fix, no eval-protocol bias)
 
-`shared/evaluation.py::_chat_generate_extra_kwargs` now reads
-`UYGHUR_UG2EN_NUM_BEAMS` at call time. Default = `1` (no beams; Slurm 2768
-numbers reproduce). `scripts/push.py` accepts `--env KEY=VAL` to forward
-exports into the Slurm wrap.
+**Why this instead of A1 (beams).** Slurm 2768 fixed the greedy repetition
+collapse (+7.42 UG→EN chrF) but left a **−13.29 chrF** gap to zero-shot
+(30.10). §14 attributes that residual to gradient / `eval_loss` checkpoint
+bias toward Uyghur-output rows and FLAN-shaped English completions — a
+**training** problem. Beams change decoding for some variants only and
+would require re-running every §2 row in parallel to stay fair; Mix-50
+changes only the recipe, not the eval protocol (same `generate_translation`
+path as Slurm 2768 for all models).
 
-**Push + submit** (`qwen_finetuned` only, ~30 min on `priority`):
+**Hypothesis.** More FLAN dilution (Mix-50 vs Mix-20) shifts the
+checkpoint toward English assistant spans and should lift UG→EN chrF at
+some cost to EN→UG chrF. Realistic target: UG→EN **20–25** chrF (not
+guaranteed to reach 30 — that likely needs B1/B2 if Mix-50 stalls).
+
+**Row mix at 100 k CUTE-P pairs** (same `sample_count` as Mix-20 run):
+
+| Bucket | Mix-20 | Mix-50 |
+|--------|--------|--------|
+| EN→UG / UG→EN (each) | 100 k | 100 k |
+| FLAN EN-only | 25 k (~11 %) | **100 k (~33 %)** |
+
+**Not in scope yet:** 200 k / 300 k pair counts — Mix-20 early-stopped at
+~1.48 epochs; quantity is unlikely to be the binding constraint until the
+mix / checkpoint mechanism is tested. Revisit only if Mix-50 plateaus.
+
+**Rsync + push** (full pipeline: preprocess + train + eval; ~15–20 h):
 
 ```bash
+rsync -avz --progress \
+  --exclude=results/ --exclude=results.archive/ --exclude=__pycache__/ \
+  --exclude='*.pyc' --exclude=.git/ --exclude=.venv/ --exclude='*.ipynb' \
+  --exclude=docs/papers/ --exclude=dataset/ --exclude=models/ \
+  --exclude=checkpoints/ \
+  ./ ju-compute-server:~/uyghurGPT/
+
 python3 scripts/push.py --server ju-compute-server \
-  --experiment 1 --mode eval --run-id 20260524_020432 \
-  --time 4:00:00 \
-  --env UYGHUR_UG2EN_NUM_BEAMS=4
+  --experiment 1 --model qwen --mix 50 --new-run \
+  --mode all --time 1-00:00:00
 ```
 
-**Pull + log** (`PROJECT_RESULTS.md` §1 + §2 row):
+**Pull + log** (same commit for §1 + new row):
 
-- Compare against Slurm 2768 (UG→EN chrF 16.8079, EN→UG 14.1762).
-- Document delta. EN→UG should remain byte-identical (gate works).
+- `results/run_<id>/experiment_1/artifacts/eval_summary.json`
+- Checkpoint dir: `checkpoints/qwen_mix50/final`
+- Add §2 row `qwen_finetuned_mix50` (or document under §3 bonus table until
+  Task 04 aggregator exists) with FLORES / WCM / C4 vs Mix-20 (Slurm 2768)
+  and `qwen_zeroshot` (30.10 / 9.96).
+- **Do not** enable `UYGHUR_UG2EN_NUM_BEAMS` — eval must match Slurm 2768
+  protocol (rep-penalty only, default beams=1).
 
-## A2 — Chat-style few-shot UG→EN k=3 (diagnostic, FT adapter)
+**Decision after Mix-50 lands:**
 
-`scripts/debug_ug2en.py` accepts `--fewshot-k`. Uses chat-template
-multi-turn (system / user / assistant pairs) with exemplars from FLORES
-**dev** (disjoint from devtest). Run on the FT adapter and compare to
-zero-shot:
+| UG→EN chrF vs Slurm 2768 (16.81) | Next step |
+|----------------------------------|-----------|
+| **≥ 22** (+5 chrF) | Write up mix trade-off; optional Mix-0 for bracket; skip B1+B2 for now |
+| **18–22** (+1 to +5) | Consider **B2** alone on a new run (direction-stratified `eval_loss`) |
+| **< 18** (no meaningful lift) | **B1 + B2** retrain (`ug2en` row weight 2× + per-direction early stopping) |
+
+Full ablation spec: `docs/tasks/bonus/02_qwen_mix_ablation.md`.
+
+---
+
+## In-flight: exp-0 rep-penalty-only zero-shot sanity gate
+
+> Submitted **before** commit `9b6141d`. Cluster code: rep-penalty +
+> `no_repeat_ngram_size` on UG→EN; **no** beam env hook.
+
+- **Pass:** `qwen_zeroshot` UG→EN within ±0.5 of **30.10**; `llama_zeroshot`
+  UG→EN within ±0.5 of **4.71**.
+- **Pull + log:** §1 entry; closes Slurm 2768 open sanity item.
+- **Do not cancel** for Mix-50 — orthogonal measurement.
+
+---
+
+## Optional — A2 diagnostic only (does not change §2)
+
+Runs while Mix-50 trains or after rsync. Informs whether the adapter still
+has a UG→EN circuit (prompt vs weights); **not** a substitute for Mix-50.
 
 ```bash
 ssh ju-compute-server 'cd ~/uyghurGPT && \
@@ -38,70 +91,38 @@ ssh ju-compute-server 'cd ~/uyghurGPT && \
     --out results/debug/ug2en_fewshot_$(date -u +%Y%m%d_%H%M%S).json'
 ```
 
-Pull the JSON; record mean chrF + failure-mode buckets in
-`PROJECT_RESULTS.md` §1 alongside Slurm 2766 (n=20 zero-shot UG→EN
-greedy baseline).
+Log mean chrF + failure modes in §1 (diagnostic paragraph only).
 
-## Decision rule for B1 + B2 (only run if A2 says we should)
+| A2 FT mean chrF (n=50) | Note for report |
+|------------------------|-----------------|
+| ≥ 27 | Circuit intact; Mix-50 + prompt shape matter |
+| 22–27 | Partly intact |
+| < 22 | Weights shifted; Mix-50 / B1+B2 more urgent |
 
-Reference points after Slurm 2768:
+---
 
-- `qwen_finetuned` UG→EN chrF on FLORES devtest 1012 = **16.81**
-- `qwen_zeroshot` UG→EN chrF on FLORES devtest 1012 = **30.10**
-- residual gap to zero-shot = **−13.29 chrF**
+## Deferred — A1 beam search (eval-protocol change)
 
-Apply this rule to the A2 n=50 result:
+Code remains in repo (`UYGHUR_UG2EN_NUM_BEAMS`, default **off**). **Paused**
+because adopting beams in §2 requires parallel re-eval of **all** chat-path
+variants (`qwen_zeroshot`, `llama_zeroshot`, `qwen_finetuned`, and ideally
+a few-shot-path policy for `cute_llama_p`) — otherwise the table is biased.
 
-| A2 `qwen_finetuned` mean chrF | Interpretation | Next step |
-|-------------------------------|----------------|-----------|
-| **≥ 27** (within ~3 chrF of zero-shot) | Adapter still knows UG→EN; chat prompt is anchoring on FLAN-shaped completions. | **Stop**. Cheaper fix is at eval prompt / few-shot, not retraining. Write up. |
-| **≥ 22 and < 27** (clear lift but residual gap > 3 chrF) | Mixed signal — circuit partly intact but adapter has shifted. | Run **B2 alone** (direction-stratified `eval_loss` checkpoint selection on a *new* retrain). |
-| **< 22** (no or marginal lift over Slurm 2768's 16.81) | Adapter genuinely lost UG→EN; in-context examples don't rescue it. | Run **B1 + B2** combined: `ug2en` row weight 2× + per-direction `eval_loss` early stopping. |
+Revisit only if Mix-50 + B1/B2 plateau and we need a decoding-only lift with
+full parity re-run budget (~3 h).
 
-Cross-check: A2 zero-shot mean chrF must be within ±2 chrF of the
-n=20 Slurm 2766 baseline (`qwen_zeroshot` mean chrF 30.33) to trust
-the A2 numbers.
+---
 
-## In-flight: exp-0 rep-penalty-only zero-shot sanity gate
+## Deferred — B1 + B2 (retrain mechanics)
 
-> Submitted **before** commit `9b6141d` (A1/A2), so the cluster's
-> `shared/evaluation.py` has `repetition_penalty=1.15` +
-> `no_repeat_ngram_size=4` UG→EN but **no env-var beam hook**. Distinct
-> from "A1 exp-0" below — do not conflate.
+See Mix-50 decision table above. Spec: `PROJECT_REFINEMENT.md` §14.
 
-- **Variable changed vs Slurm 2749:** rep-penalty + no_repeat_ngram_size
-  only. `num_beams` is still `1`.
-- **Pass:** `qwen_zeroshot` UG→EN chrF within ±0.5 of **30.10**;
-  `llama_zeroshot` UG→EN chrF within ±0.5 of **4.71**.
-- **Pull + log:** add a §1 entry "rep-penalty-only zero-shot sanity
-  gate" (closes Slurm 2768's open item). If chrF moves >0.5,
-  investigate before continuing with A1.
-
-## A1 exp-0 (conditional — only if A1 exp-1 lands a useful lift)
-
-`UYGHUR_UG2EN_NUM_BEAMS=4` also applies to zero-shot at eval time, so
-to keep beams as the project default we need a beams-on zero-shot
-gate. Defer until A1 exp-1 result is in:
-
-- If A1 exp-1 chrF > Slurm 2768 by ≥1 chrF → run this gate.
-- If A1 exp-1 is a no-op or worse → skip; we'll revert beams.
-
-```bash
-python3 scripts/push.py --server ju-compute-server \
-  --experiment 0 --mode eval --time 2:00:00 \
-  --env UYGHUR_UG2EN_NUM_BEAMS=4
-```
-
-`qwen_zeroshot` UG→EN chrF must stay within ±0.5 of **30.10**
-(Slurm 2749) **and** within ±0.5 of the rep-penalty-only zero-shot
-gate above (so we can attribute any movement to beams specifically).
+---
 
 ## Done (remove when read)
 
-- ~~Slurm 2768 `qwen_finetuned` UG→EN re-eval~~ — `PROJECT_RESULTS.md`
-  §1 + §2 updated; `PROJECT_REFINEMENT.md` §14 has the pre/post table.
-- ~~Slurm 2766 `debug_ug2en`~~ — mechanism report in `PROJECT_RESULTS.md`
-  §1 + `PROJECT_REFINEMENT.md` §14.
-- ~~Training-data audit (option 4)~~ — balanced `ug2en`/`en2ug`; not a
-  coverage bug.
-- ~~CUTE-Llama-P / Tasks 01–02 / core §2 table~~ — Slurm 2750 / 2749.
+- ~~Slurm 2768 `qwen_finetuned` UG→EN re-eval~~ — §2 UG→EN **16.8079**.
+- ~~Slurm 2766 `debug_ug2en`~~ — mechanism in §14.
+- ~~Training-data audit~~ — balanced `ug2en`/`en2ug`.
+- ~~CUTE-Llama-P / Tasks 01–02 / core §2 (Mix-20)~~ — Slurm 2750 / 2749.
+- ~~A1/A2 implementation (code)~~ — commit `9b6141d`; A1 eval **not** run.
