@@ -1,11 +1,9 @@
 # Task 02 — WCM-v2 re-evaluation across variants
 
-> **Status:** running (3 of 4 variants done — `qwen_finetuned` 21.00 %
-> via constrained-LL on Slurm 2744; `qwen_zeroshot` 6.33 % and
-> `llama_zeroshot` 3.00 % on Slurm 2749 / `run_20260526_223852`;
-> `cute_llama_p` cell still blocked on Task 01 — Slurm 2745 / 2748 /
-> 2750 have all stalled before any FLORES progress, see
-> `PROJECT_RESULTS.md` §1 "2026-05-26 / 27 — Slurm 2748 + 2750").
+> **Status:** done (all 4 variants under constrained-LL / `base_lm`
+> scoring: `qwen_ft` 21.00 % Slurm 2744; `qwen_zs` 6.33 %, `llama_zs`
+> 3.00 % Slurm 2749; `cute_llama_p` 15.33 % Slurm 2750 /
+> `run_20260526_224102`).
 > **Depends on:** none for the qwen / llama re-eval; Task 01 must land
 > first to also cover `cute_llama_p`.
 > **Blocks:** Task 04 (consolidated results table), Task 05 (analysis),
@@ -52,11 +50,8 @@ for every variant under a **single consistent scoring protocol**
      `run_20260526_223852`). ×4.5 over the 0.67 % free-form 2714 cell.
    - `qwen_finetuned` — **done** (21.00 %, 63 / 300, Slurm 2744 on
      `run_20260524_020432`'s `final/` adapter).
-   - `cute_llama_p` — still blocked on Task 01. Three exp-2
-     submissions (Slurm 2745 / 2748 / 2750) have all stalled before
-     any FLORES progress dots; see `PROJECT_RESULTS.md` §1 entry
-     "2026-05-26 / 27 — Slurm 2748 + 2750" for the investigation
-     handoff and `TODO.md` for the next-action checklist.
+   - `cute_llama_p` — **done** (15.33 %, 46 / 300, Slurm 2750 /
+     `run_20260526_224102`, `base_lm` constrained-LL).
 2. The `wcm` block of each variant's `eval_summary.json` reports
    `accuracy`, `correct`, `total = 300`, `text_column = "text"`,
    `label_column = "label"`, and the constrained-LL marker (no
@@ -187,9 +182,9 @@ the §1 / §2 layout is the single source of truth.
    and `::test_classify_uyghur_base_lm_constrained_ll` — extend with
    a chat-template constrained-LL test if Step 3's zero-shot re-eval
    surfaces a regression.
-4. The WCM column of `PROJECT_RESULTS.md` §2 *Final results — core
-   experiments* contains four constrained-LL numbers (no `pending`,
-   no mixed-protocol rows) once Slurm 2749 + Slurm 2750 land.
+4. **Met.** The WCM column of `PROJECT_RESULTS.md` §2 contains four
+   protocol-consistent numbers (Slurm 2744 / 2749 / 2750); no `pending`
+   or mixed-protocol rows.
 
 ## References
 

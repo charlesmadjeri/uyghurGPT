@@ -155,12 +155,35 @@ the numbers moved**. It has three sections:
   `generate_translation_fewshot` with a per-sentence print and lower
   the few-shot `k` or `max_new_tokens` before the next resubmit.
 
-### Pending diagnostics
+### 2026-05-27 — `run_20260526_224102` (Slurm 2750) — CUTE-Llama-P full eval **complete**
 
-- *(Deferred, not on the cluster yet — see `TODO.md`)* UG→EN
-  per-sentence failure-mode diagnostic (`scripts/debug_ug2en.py`).
-  Waiting for a queue slot to free; informational, not on the
-  critical path for the §2 table.
+> 24 h resubmit (`--time 1-00:00:00`) after Slurm 2745 (6 h timeout at
+> `[eval] 50/1012`) and 2748 (died before first progress dot). First
+> `[eval] 50/1012` at ~30 min wall; `run_status.json` → `evaluated`
+> 07:02 UTC (~7 h total for FLORES × 2 + WCM + C4).
+
+- **+** `cute_llama_p` row populated (FLORES few-shot k=3, WCM
+  `base_lm` constrained-LL).
+- **+** FLORES EN→UG chrF **6.8773** (BLEU 0.2638); UG→EN chrF
+  **23.0881** (BLEU 1.7748). Direction asymmetry is **opposite** to
+  `qwen_finetuned` (strong EN→UG FT, weak UG→EN FT).
+- **+** WCM **15.33 %** (46 / 300) — just under the 16.7 % random
+  floor; highest among non-FT variants; below `qwen_finetuned` 21.00 %.
+- **+** C4 EN PPL **13.0148** — lowest in the core table.
+- **−** EN→UG: `qwen_finetuned` **+7.30 chrF** over `cute_llama_p`
+  (14.18 vs 6.88) — primary project comparison favours QLoRA Mix-20.
+- **−** UG→EN: `cute_llama_p` **+13.70 chrF** over `qwen_finetuned`
+  (23.09 vs 9.39) but still **−7.01 chrF** vs `qwen_zeroshot` 30.10 —
+  FT UG→EN regression is not explained by the CUTE baseline being
+  stronger on that direction.
+
+### 2026-05-27 — Slurm 2751 (`debug_ug2en`) — failed at import
+
+- `scripts/debug_ug2en.py` crashed immediately:
+  `ModuleNotFoundError: No module named 'shared'`. Invoking
+  `python scripts/debug_ug2en.py` puts `scripts/` on `sys.path`, not
+  the repo root. Fixed in-repo with `sys.path.insert(0, REPO_ROOT)`;
+  re-submit after rsync (`TODO.md`).
 
 ---
 
@@ -175,7 +198,7 @@ the source run for each populated cell is noted under the table.
 | `qwen_zeroshot`   | 9.963       | 0.2389 | **30.0957** | 4.2854 | 6.33 % (19 / 300, constrained-LL)      | 16.5949 |
 | `llama_zeroshot`  | 0.8447      | 0.449  | 4.705       | 1.3592 | 3.00 % (9 / 300, constrained-LL)       | **13.6891** |
 | `qwen_finetuned`  | **14.1762** | 0.0354 | 9.385       | 0.1387 | **21.00 %** (63 / 300, constrained-LL) | 16.1667 |
-| `cute_llama_p`    | _pending_   | _pending_ | _pending_ | _pending_ | _pending_                              | _pending_ |
+| `cute_llama_p`    | 6.8773      | 0.2638 | 23.0881     | 1.7748 | 15.33 % (46 / 300, base_lm constrained-LL) | **13.0148** |
 
 Sources for populated cells (latest measurement per metric):
 
@@ -184,7 +207,7 @@ Sources for populated cells (latest measurement per metric):
 | `qwen_zeroshot`  | `run_20260526_223852` (Slurm 2749) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
 | `llama_zeroshot` | `run_20260526_223852` (Slurm 2749) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
 | `qwen_finetuned` | `run_20260524_020432` (Slurm 2744) | `run_20260524_020432` (Slurm 2744, constrained-LL) | `run_20260524_020432` (Slurm 2744) |
-| `cute_llama_p`   | n/a (Slurm 2745 / 2748 / 2750 all stalled before any FLORES output) | n/a | n/a |
+| `cute_llama_p`   | `run_20260526_224102` (Slurm 2750) | `run_20260526_224102` (Slurm 2750, base_lm constrained-LL) | `run_20260526_224102` (Slurm 2750) |
 
 ### Analysis (current best estimate)
 
@@ -219,26 +242,32 @@ Sources for populated cells (latest measurement per metric):
   metric for low-resource Uyghur — token-level BLEU is near zero for
   every variant including the zero-shot baselines. Reported but not
   interpreted.
-- **C4 PPL is stable** (16.59 → 16.17 across fine-tuning;
-  `llama_zeroshot` lower at 13.69 reflects the LLaMA tokenizer's English
-  efficiency, unrelated to Uyghur training). No catastrophic forgetting.
+- **C4 PPL is stable** (16.59 → 16.17 across Qwen fine-tuning). No
+  catastrophic forgetting. `cute_llama_p` at **13.01** and
+  `llama_zeroshot` at **13.69** are lower than Qwen variants — both
+  reflect Llama-family English tokenization / base-LM efficiency, not
+  Uyghur-task competence.
+- **CUTE-Llama-P vs Qwen Mix-20 (research question).** On the metrics
+  this project optimizes for, **QLoRA instruction tuning wins**:
+  EN→UG chrF +7.30 (`qwen_ft` 14.18 vs `cute_llama_p` 6.88), WCM
+  +5.67 pp (21.00 % vs 15.33 %). CUTE-Llama-P's only win in the core
+  table is UG→EN chrF (+13.70 over `qwen_ft`), and even there it
+  underperforms `qwen_zeroshot` (−7.01 chrF). The published baseline
+  does not rescue the fine-tuned model's generate-English regression.
 
-### Outstanding before the core comparison is complete
+### Outstanding (core table **complete** — 2026-05-27)
 
-1. **`cute_llama_p` row — only remaining gap.** Required for the
-   CUTE-Llama-P comparison that motivates the project
-   (`docs/01_prob_describtion.md` §1.5). Three submissions
-   (Slurm 2745 / 2748 / 2750) have all stalled before producing any
-   FLORES progress dots — even the 24 h walltime resubmit (2750) is
-   sitting silent on the first few-shot batch. Investigation tracked
-   in `TODO.md` "Investigate CUTE-Llama-P FLORES stall" and §1
-   "2026-05-26 / 27 — Slurm 2748 + 2750".
-2. ~~`qwen_zeroshot` / `llama_zeroshot` WCM under constrained-LL
-   scoring.~~ **Done** on Slurm 2749 — see §1 "2026-05-27 —
-   `run_20260526_223852`".
-3. **(Optional) per-direction chrF confidence intervals via sacrebleu
-   `--paired-bs`.** Currently the eval pipeline reports point estimates
-   only; tracked in `docs/04_planned_evaluation.md` §4.3.
+All four variant rows in §2 are populated. Remaining work is report
+machinery and optional depth, not missing Slurm numbers:
+
+1. **Task 04** — `scripts/aggregate_results.py` + machine-readable
+   `results/reports/consolidated_results.json` (see
+   `docs/tasks/04_consolidated_results_table.md`).
+2. **(Optional) `debug_ug2en.py` re-submit** — Slurm 2751 failed on
+   import (fixed in-repo); per-sentence failure-mode buckets for Task
+   05. See `TODO.md`.
+3. **(Optional) sacrebleu `--paired-bs` CIs** — tracked in
+   `docs/04_planned_evaluation.md` §4.3.
 
 ---
 

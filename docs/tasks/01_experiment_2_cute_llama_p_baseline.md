@@ -1,9 +1,9 @@
 # Task 01 — Experiment 2: CUTE-Llama-P few-shot baseline
 
-> **Status:** running (code shipped; cluster results pending — Slurm
-> `2745` timed out at 6 h on `[eval] 50/1012` EN→UG, no artifacts.
-> Resubmitted as Slurm `2750` / `run_20260526_222254` with 24 h walltime;
-> waiting on it to land).
+> **Status:** done (Slurm **2750** / `run_20260526_224102` — full eval
+> `evaluated` 2026-05-27 07:02 UTC; EN→UG chrF 6.88, UG→EN chrF 23.09,
+> WCM 15.33 %, C4 PPL 13.01. Slurm 2745 / 2748 failed; 2750 succeeded
+> after 24 h walltime — see `PROJECT_RESULTS.md` §1).
 > **Depends on:** none (eval-only; preflight check 5 already PASS on the
 > current 24 GB MIG slice — see `results/preflight/check5.json`).
 > **Blocks:** Tasks 04 (consolidated results table), 05 (analysis), 06
