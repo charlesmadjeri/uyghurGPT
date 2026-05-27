@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_ADAPTER = (
     REPO_ROOT
     / "results/run_20260524_020432/experiment_1/checkpoints/qwen_mix20/final"
