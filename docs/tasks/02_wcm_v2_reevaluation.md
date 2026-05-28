@@ -3,7 +3,9 @@
 > **Status:** done (all 4 variants under constrained-LL / `base_lm`
 > scoring: `qwen_ft` 21.00 % Slurm 2744; `qwen_zs` 6.33 %, `llama_zs`
 > 3.00 % Slurm 2749; `cute_llama_p` 15.33 % Slurm 2750 /
-> `run_20260526_224102`).
+> `run_20260526_224102`). **Macro-recall / macro-F1 audit on Mix-50
+> vs `qwen_zs` shipped via Slurm 2785** (`scripts/debug_wcm.py`) — see
+> "Class-imbalance verdict" appendix at the bottom of this file.
 > **Depends on:** none for the qwen / llama re-eval; Task 01 must land
 > first to also cover `cute_llama_p`.
 > **Blocks:** Task 04 (consolidated results table), Task 05 (analysis),
@@ -195,3 +197,38 @@ the §1 / §2 layout is the single source of truth.
   and the Slurm 2744 entry in `PROJECT_RESULTS.md` §1.
 - Append-only logging convention (current §1 + §2 layout): header of
   `PROJECT_RESULTS.md`.
+
+## Appendix — class-imbalance verdict (Slurm 2785 debug_wcm)
+
+Raw accuracy on `minority/ug.txt` is biased by the 85.3 % majority
+class (label `1` covers 256 / 300 rows). Mix-50 (Slurm 2770) reported
+81 % raw acc., suspiciously close to the always-predict-majority floor.
+`scripts/debug_wcm.py` reproduces the constrained-LL path with full
+per-label log-probs and emits balanced accuracy (= macro recall),
+macro precision, macro F1, and a `majority_class_collapse_detected`
+flag.
+
+| Metric | Mix-50 | `qwen_zeroshot` | Floor |
+|--------|--------|-----------------|-------|
+| Raw accuracy | 0.810 | 0.063 | 0.853 (always-majority) |
+| Balanced accuracy (macro recall) | **0.258** | **0.271** | **0.167** (uniform 1/6) |
+| Macro precision | 0.203 | 0.216 | – |
+| Macro F1 | **0.220** | **0.103** | – |
+| `majority_class_share_pred` | 0.830 (<0.95) | 0.023 | – |
+| Per-class recall `[0,1,3,4,6,9]` | `[0, 0.90, 0, 0.65, 0, 0]` | `[0, 0.02, 0.57, 0.20, 0, 0.83]` | – |
+
+**Verdict.** No majority-class collapse, but Mix-50's lift on balanced
+accuracy is **statistically negligible** vs zero-shot (0.258 vs 0.271,
+both ~9 pp above the uniform floor). On **macro F1** the fine-tune
+wins ×2.1 (0.220 vs 0.103) because its majority-class precision is
+high. Mix-50 learned exactly two distinctions (labels 1 and 4) which
+together cover 92 % of gold support; zero TPs on the other four labels.
+
+**Why not just balance the dataset?** Label `0` has 3 rows; a
+stratified balanced subset caps at 18 rows — single-error swings
+≥ 5.5 pp. Macro recall is the textbook fix and gives the same
+property at full n = 300.
+
+The §3 Mix-50 cell in `PROJECT_RESULTS.md` carries this footnote;
+Task 05 (analysis) gets the same line under "negative / surprising
+results".
