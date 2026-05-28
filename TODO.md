@@ -8,50 +8,25 @@ when empty.
 > in flight. See `docs/PROJECT_RESULTS.md` §1 / §2 / §3 for the
 > measured numbers. Remaining work is reporting.
 
-## In-flight: qualitative examples 5-variant re-run (Slurm 2788)
-
-`scripts/qualitative_examples.py` (commit `a7a0593`) scores **5
-variants** × 2 directions × 5 FLORES devtest sentences:
-
-| Variant | Adapter |
-|---------|---------|
-| `qwen_zeroshot` / `llama_zeroshot` | none |
-| `qwen_finetuned_mix20` | `run_20260524_020432/.../qwen_mix20/final` (§2) |
-| `qwen_finetuned_mix50` | `run_20260527_185416/.../qwen_mix50/final` (§3) |
-| `cute_llama_p` | none (fp16 base-LM few-shot) |
-
-OOM fix from Slurm 2786 in place (load `cute_llama_p` first to dodge
-24 GB MIG fragmentation), plus `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
-as a second guard.
-
-**Pull when done:**
-
-```bash
-rsync -avz ju-compute-server:~/uyghurGPT/results/reports/qualitative_examples.{json,md} results/reports/ \
-  && rsync -avz ju-compute-server:~/uyghurGPT/results/slurm_qualitative_*.out results/
-```
-
-Once pulled: copy `qualitative_examples.md` into
-`docs/qualitative_examples.md` (or `git add -f`) so the report can
-ship the markdown table. Update `PROJECT_RESULTS.md` §1 Slurm 2788
-entry with the per-sentence mean chrF for each variant.
-
----
-
 ## Write-up phase (no more GPU jobs)
 
-After the 2788 pull:
+All Slurm runs are done and pulled. Remaining is reporting.
 
 1. **Task 05** — `docs/05_results_analysis.md` 8-section write-up.
    Reuse:
    - §2 + §3 core / bonus tables verbatim.
-   - §1 Slurm 2770 / 2771 / 2785 entries for *why* each row says what
-     it says.
+   - §1 Slurm 2770 / 2771 / 2785 / 2788 entries for *why* each row
+     says what it says.
    - WCM macro-metric verdict (raw 81 % real but balanced-accuracy
      parity with zero-shot; macro F1 win is real).
    - §14 UG→EN regression mechanism: greedy collapse partial fix
      (Slurm 2768) + training-side residual + Mix-50 retraining lift
      (+1.16 chrF).
+   - Qualitative table (`results/reports/qualitative_examples.md`,
+     5 variants × 5 sentences × 2 directions) for Task 05 §6 — copy
+     into `docs/qualitative_examples.md` or `git add -f` if the
+     markdown table needs to ship with the report (`results/` is
+     gitignored).
 2. **Task 06** — final report / slides.
 3. **(Optional) Task 04** — `scripts/aggregate_results.py`. §2 already
    serves as the canonical table; skippable.
@@ -80,10 +55,12 @@ After the 2788 pull:
 
 ## Done (remove when read)
 
-- ~~Slurm 2788 submission~~ — qualitative 5-variant re-run in flight
-  (commit `a7a0593`).
-- ~~Slurm 2787~~ — qualitative 4-variant (Mix-20 only) pulled; mean
-  per-sentence chrF logged in `PROJECT_RESULTS.md` §1.
+- ~~Slurm 2788~~ — qualitative 5-variant pulled
+  (`results/reports/qualitative_examples.{json,md}`). Per-variant
+  mean chrF: `qwen_zs` 6.92 / 29.95; `llama_zs` 0.47 / 19.60;
+  Mix-20 12.25 / 17.81; **Mix-50 12.59 / 21.38**; `cute_llama_p`
+  8.61 / 28.10. Table in `PROJECT_RESULTS.md` §1 (2026-05-28 entry).
+- ~~Slurm 2787~~ — superseded by 2788 (was Mix-20 only).
 - ~~Slurm 2786~~ — qualitative OOM, fixed by load-order change
   (commit `f3586b3`).
 - ~~Slurm 2785 (`debug_wcm`)~~ — Mix-50 WCM audit + macro metrics in

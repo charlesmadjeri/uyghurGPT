@@ -347,6 +347,8 @@ the numbers moved**. It has three sections:
 
 > `scripts/qualitative_examples.py` — N FLORES sentences × variants ×
 > 2 directions, sentence-level chrF; for Task 05 §6 of the report.
+> Artifacts: `results/reports/qualitative_examples.{json,md}` (latest =
+> Slurm 2788).
 
 - **−** Slurm 2786 OOM'd in `caching_allocator_warmup` when
   `cute_llama_p` (fp16, ~13 GB) loaded as the 4th variant: the prior
@@ -355,18 +357,33 @@ the numbers moved**. It has three sections:
   `f3586b3`): load `cute_llama_p` first while the allocator is
   fragment-free; iteration order decoupled from display order; explicit
   `gc.collect()` between variants.
-- **=** Slurm 2787 succeeded but only ran 4 variants (Mix-20 only);
-  per-sentence mean chrF logged for `qwen_zeroshot` (EN→UG 6.92, UG→EN
-  29.95), `llama_zeroshot` (0.47, 19.60), `qwen_finetuned`/Mix-20
-  (12.25, 17.81), `cute_llama_p` (8.61, 28.10). Numbers track §2 modulo
-  the 5-sentence sample.
-- **+** Script generalised (commit `a7a0593`) to score **5 variants**:
-  `qwen_zeroshot, llama_zeroshot, qwen_finetuned_mix20,
-  qwen_finetuned_mix50, cute_llama_p`. Slurm 2788 submitted with the
-  5-variant default + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
-  as a second fragmentation guard. **In-flight at last sync** —
-  artifacts `results/reports/qualitative_examples.{json,md}` will
-  supersede the 2787 pull.
+- **=** Slurm 2787 succeeded but with the old single-FT spec (Mix-20
+  only). Superseded by 2788.
+- **+** Slurm 2788 — **canonical 5-variant table** (commit `a7a0593` —
+  `qwen_finetuned_mix20` + `qwen_finetuned_mix50` both scored). FLORES
+  devtest ids `[0, 1, 2, 3, 4]`. Per-variant mean sentence chrF:
+
+  | Variant | EN→UG | UG→EN |
+  |---------|-------|-------|
+  | `qwen_zeroshot`        | 6.92  | 29.95 |
+  | `llama_zeroshot`       | 0.47  | 19.60 |
+  | `qwen_finetuned_mix20` | 12.25 | 17.81 |
+  | `qwen_finetuned_mix50` | **12.59** | **21.38** |
+  | `cute_llama_p`         | 8.61  | 28.10 |
+
+- **Interpretation.** Sentence-level chrF on a 5-sentence slice tracks
+  the §2 / §3 corpus numbers in direction: FT > zero-shot on EN→UG
+  (+5–6 chrF), zero-shot + CUTE > FT on UG→EN (Qwen-zs leads by
+  +8–12 chrF). Mix-50 vs Mix-20 head-to-head on this slice is
+  **+0.34 chrF EN→UG, +3.57 chrF UG→EN** — directionally consistent
+  with the corpus-level +1.16 chrF UG→EN gain from Slurm 2770 but
+  larger; treat the +3.57 as sentence-sample noise on top of the +1.16
+  signal. `llama_zeroshot` is **catastrophic on EN→UG** (mean 0.47 —
+  4× zero outputs and one near-zero) but recovers on UG→EN after the
+  rep-penalty fix (mean 19.60), matching Slurm 2771's corpus number.
+  Worth quoting two qualitative rows in Task 05 §6 to make the failure
+  modes legible (Mix-20 garbled-English vs Mix-50 source-faithful;
+  llama EN→UG empty output).
 
 ---
 
