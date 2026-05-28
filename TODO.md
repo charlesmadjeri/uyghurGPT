@@ -21,44 +21,58 @@ in the pulled log; WCM + PPL still to come.
 - **Log:** §1 entry (single paragraph) closing Slurm 2768's open sanity
   item.
 
-## Verification — WCM Mix-50 audit (debug_wcm.py) — **Pulled, verdict: real-but-majority-biased**
+## Verification — WCM Mix-50 audit — **Pulled, verdict: real-but-majority-biased**
 
 Slurm 2785 (`results/debug/wcm_mix50_vs_zs.json`, log
-`results/slurm_debug_wcm_2785.out`). Mix-50 falls in the **middle** row
-of the decision table: not collapse, but driven by the label-1 prior.
+`results/slurm_debug_wcm_2785.out`). 300 rows, 6 classes with support
+(gold: `1:256, 4:20, 6:8, 3:7, 9:6, 0:3`). The natural class
+imbalance (label `1` covers 85.3 % of rows) makes raw accuracy a
+biased headline. Class-balance-invariant metrics tell the real story:
 
-| Metric | `qwen_finetuned` (Mix-50) | `qwen_zeroshot` |
-|--------|---------------------------|-----------------|
-| Accuracy | 0.810 (243/300) | 0.063 (19/300) |
-| Always-predict-majority floor | 0.853 | 0.853 |
-| `pred_dist` (top) | `1: 249, 4: 44, …` | `9: 164, 4: 94, …` |
-| `majority_class_share_pred` | **0.830** | 0.023 |
-| `majority_class_collapse_detected` | **False** (threshold ≥ 0.95) | False |
-| Acc on majority rows (label 1) | 0.898 | 0.023 |
-| Acc on non-majority rows | **0.296** | **0.296** |
-| Label-1 F1 | 0.911 (P 0.924, R 0.898) | 0.046 |
-| Label-4 F1 | 0.406 (P 0.296, R 0.650) | 0.070 |
-| Other labels (0/3/6/9) F1 | **0 / None** (≤ 3 TP combined) | mostly 0 |
-| Mean top-1 − top-2 log-prob margin | 0.29 (low confidence) | 1.04 (confidently wrong) |
+| Metric | Mix-50 | Zero-shot | Floor |
+|--------|--------|-----------|-------|
+| Raw accuracy | **0.810** | 0.063 | 0.853 (always-maj) |
+| **Balanced accuracy** = macro recall | **0.258** | 0.271 | 0.167 (uniform 1/6) |
+| Macro precision | 0.203 | 0.216 | – |
+| Macro F1 | **0.220** | 0.103 | – |
+| Per-class recall `[0,1,3,4,6,9]` | `[0.00, 0.90, 0.00, 0.65, 0.00, 0.00]` | `[0.00, 0.02, 0.57, 0.20, 0.00, 0.83]` | – |
+| `majority_class_share_pred` | 0.830 (< 0.95 collapse threshold) | 0.023 | – |
+| Top-1 − top-2 log-prob margin | 0.29 (low conf) | 1.04 (confidently wrong) | – |
 
-**Reading.** §3 cell stays — 81 % is real, not collapse — but the report
-must caveat that **non-majority recall is unchanged from zero-shot**
-(both at 13/44 = 29.55 %). The +75 pp lift comes entirely from
-"default to label 1 instead of guessing label 9". Mix-50 has learned
-the prior + the **label-4** sub-distinction (F1 = 0.41), and nothing
-else. Label-1 + label-4 cover 276/300 = 92 % of the gold support, so
-two-class competence ≈ overall accuracy.
+**Verdict.** Under the metric you asked for (class-balance-invariant),
+**Mix-50 ≈ zero-shot**: 25.8 % vs 27.1 % balanced accuracy, both ~9 pp
+above the 16.7 % uniform-random floor. Mix-50 has learned exactly two
+things: (a) the prior `P(label = 1)`, and (b) the label-4 distinction
+(R 0.65, F1 0.41). Labels 0/3/6/9 → 0 TPs. Mix-50 still beats zero-shot
+on **macro F1** (0.22 vs 0.10), because its high majority-class
+precision lifts the unweighted mean.
 
-Zero-shot is the mirror image: it almost never picks label 1 (recall
-2.3 %) but over-fires label 9 (164 predictions for 6 true rows,
-recall 83.3 %). Two completely different failure modes converge on
-the same 29.55 % non-majority accuracy — coincidence, not signal.
+Zero-shot is the mirror image: almost never picks label 1 (R 0.02) but
+over-fires label 9 (164 predictions for 6 true rows, R 0.83). Two
+opposite failure modes converge on the same balanced accuracy by
+accident.
 
-**For the write-up.** Quote both lines in `PROJECT_RESULTS.md` §3
-caveats and Task 05 §8 (negative results): "Mix-50's WCM headline is
-mostly the label-1 prior; non-majority recall is identical to
-zero-shot." This is honest and turns a suspicious cell into a clean
-finding.
+### Why not just resample to a balanced set?
+
+The natural file `minority/ug.txt` has only **300 rows** and label `0`
+has only 3 samples. A stratified balanced subset is therefore capped
+at **3 × 6 = 18 rows** — single-error swings ≥ 5 pp, useless for
+ranking. **Macro recall** (above) is the textbook fix: it gives
+exactly the property you want (defaulting to label 1 contributes
+only `1/N_classes` to the score) **without** discarding 282 rows.
+
+`scripts/debug_wcm.py` now emits `balanced_accuracy_macro_recall`,
+`macro_precision`, `macro_f1`, and `uniform_floor_acc` on every run.
+No GPU rerun needed for Mix-50 — the values above are derived from
+the existing JSON.
+
+### For the write-up
+
+- `PROJECT_RESULTS.md` §3 Mix-50 row keeps `0.81` but adds a footnote:
+  *"Raw accuracy near the 85.3 % majority floor. Balanced accuracy
+  (macro recall) = 0.258, macro F1 = 0.220; zero-shot = 0.271 / 0.103.
+  Mix-50's lift is concentrated on labels 1 and 4."*
+- Task 05 §8 (negative results) gets the same line as the WCM signal.
 
 ## Qualitative examples — Option B (final inference job, **re-submission**)
 

@@ -192,11 +192,33 @@ def _summarize(rows: list[dict], labels: list[str], variant: str) -> dict:
         round(sum(margins) / len(margins), 4) if margins else None
     )
 
+    labels_with_support = [l for l in labels if per_label[l]["support"] > 0]
+    n_eff = len(labels_with_support)
+
+    def _macro(field: str) -> float | None:
+        if not labels_with_support:
+            return None
+        vals = [
+            per_label[l][field] if per_label[l][field] is not None else 0.0
+            for l in labels_with_support
+        ]
+        return round(sum(vals) / len(vals), 4)
+
+    macro_recall = _macro("recall")
+    macro_precision = _macro("precision")
+    macro_f1 = _macro("f1")
+    uniform_floor = round(1 / n_eff, 4) if n_eff else None
+
     return {
         "variant": variant,
         "n": total,
         "accuracy": acc,
         "always_predict_majority_acc": always_maj_acc,
+        "uniform_floor_acc": uniform_floor,
+        "balanced_accuracy_macro_recall": macro_recall,
+        "macro_precision": macro_precision,
+        "macro_f1": macro_f1,
+        "n_classes_with_support": n_eff,
         "majority_class": maj_label,
         "majority_class_share_gold": maj_gold_share,
         "majority_class_share_pred": pred_maj_share,
@@ -364,6 +386,12 @@ def main() -> int:
             f"pred[maj]={s['majority_class_share_pred']}  "
             f"acc_maj={s['accuracy_on_majority_rows']}  "
             f"acc_non_maj={s['accuracy_on_non_majority_rows']}{flag}"
+        )
+        print(
+            f"    balanced_acc(macro_recall)={s['balanced_accuracy_macro_recall']}  "
+            f"macro_f1={s['macro_f1']}  "
+            f"uniform_floor={s['uniform_floor_acc']} "
+            f"(n_classes={s['n_classes_with_support']})"
         )
         print(f"    pred_dist={s['pred_distribution']}")
     return 0
