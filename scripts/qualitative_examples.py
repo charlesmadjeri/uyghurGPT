@@ -35,6 +35,7 @@ Reproducibility: the picked indices are FLORES devtest row positions
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 from datetime import datetime, timezone
@@ -327,8 +328,21 @@ def main() -> int:
             }
         )
 
-    all_rows: list[dict] = []
-    for spec in variant_specs:
+    # Memory-friendly load order: ``cute_llama_p`` runs in fp16 (~13 GB on
+    # a 7B Llama-2 backbone), the instruct variants run in 4-bit (~5 GB).
+    # Slurm 2786 OOM'd in ``caching_allocator_warmup`` when cute_llama_p
+    # loaded *last* — after three load/del/empty_cache cycles the 24 GB
+    # MIG had no contiguous 13 GB block for the warmup's one-shot
+    # ``torch.empty(byte_count // 2)``. Loading cute_llama_p first while
+    # the allocator is fragment-free fixes this; the JSON / markdown still
+    # iterate ``variant_specs`` in the authored display order below.
+    def _load_priority(spec: dict) -> int:
+        return 0 if spec["model"] == "cute_llama_p" else 1
+
+    load_order = sorted(variant_specs, key=_load_priority)
+
+    rows_by_variant: dict[str, list[dict]] = {}
+    for spec in load_order:
         label = spec["label"]
         print(
             f"\n[qual] Loading {label} "
@@ -346,12 +360,18 @@ def main() -> int:
             en2ug_exemplars,
             ug2en_exemplars,
         )
-        all_rows.extend(rows)
+        rows_by_variant[label] = rows
         del model
+        del tok
+        gc.collect()
         import torch
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    all_rows: list[dict] = []
+    for spec in variant_specs:
+        all_rows.extend(rows_by_variant.get(spec["label"], []))
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
