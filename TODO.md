@@ -3,34 +3,30 @@
 Short-lived, actionable items. Pop entries as they land; delete this file
 when empty.
 
-## Priority — Mix-50 retrain (training-side fix, no eval-protocol bias)
+> **Experimentation closed.** No further fine-tunes or eval-protocol
+> changes are planned — see `docs/PROJECT_RESULTS.md` §2 + §3 for the
+> measured tables. Remaining items are inference verification, qualitative
+> data capture, and write-up. The two open Slurm jobs below are the
+> **last** GPU runs of the project.
 
-**Why this instead of A1 (beams).** Slurm 2768 fixed the greedy repetition
-collapse (+7.42 UG→EN chrF) but left a **−13.29 chrF** gap to zero-shot
-(30.10). §14 attributes that residual to gradient / `eval_loss` checkpoint
-bias toward Uyghur-output rows and FLAN-shaped English completions — a
-**training** problem. Beams change decoding for some variants only and
-would require re-running every §2 row in parallel to stay fair; Mix-50
-changes only the recipe, not the eval protocol (same `generate_translation`
-path as Slurm 2768 for all models).
+## In-flight: exp-0 rep-penalty-only zero-shot sanity gate (Slurm 2771)
 
-**Hypothesis.** More FLAN dilution (Mix-50 vs Mix-20) shifts the
-checkpoint toward English assistant spans and should lift UG→EN chrF at
-some cost to EN→UG chrF. Realistic target: UG→EN **20–25** chrF (not
-guaranteed to reach 30 — that likely needs B1/B2 if Mix-50 stalls).
+`run_20260528_103619`. Qwen done (FLORES UG→EN **29.5635**, within ±0.5
+of 30.10 — gate **pass**). `llama_zeroshot` FLORES was at **700/1012**
+in the pulled log; WCM + PPL still to come.
 
-**Row mix at 100 k CUTE-P pairs** (same `sample_count` as Mix-20 run):
+- **Pull when done:** `eval_*_llama_zeroshot.json`, slurm log.
+- **Pass:** `llama_zeroshot` UG→EN chrF within ±0.5 of **4.71** (Slurm
+  2749) and WCM/PPL byte-identical.
+- **Log:** §1 entry (single paragraph) closing Slurm 2768's open sanity
+  item.
 
-| Bucket | Mix-20 | Mix-50 |
-|--------|--------|--------|
-| EN→UG / UG→EN (each) | 100 k | 100 k |
-| FLAN EN-only | 25 k (~11 %) | **100 k (~33 %)** |
+## Verification — WCM Mix-50 audit (debug_wcm.py)
 
-**Not in scope yet:** 200 k / 300 k pair counts — Mix-20 early-stopped at
-~1.48 epochs; quantity is unlikely to be the binding constraint until the
-mix / checkpoint mechanism is tested. Revisit only if Mix-50 plateaus.
-
-**Rsync + push** (full pipeline: preprocess + train + eval; ~15–20 h):
+Mix-50 reported WCM **81.00 %** (243/300). Majority-class floor is
+**85.3 %** (256/300 = label `1`). `scripts/debug_wcm.py` records the
+full per-label log-prob distribution + confusion matrix to decide
+whether this is real classification or majority-class collapse.
 
 ```bash
 rsync -avz --progress \
@@ -40,87 +36,109 @@ rsync -avz --progress \
   --exclude=checkpoints/ \
   ./ ju-compute-server:~/uyghurGPT/
 
-python3 scripts/push.py --server ju-compute-server \
-  --experiment 1 --model qwen --mix 50 --new-run \
-  --mode all --time 1-00:00:00
+ssh ju-compute-server "cd ~/uyghurGPT && mkdir -p results results/debug && sbatch \
+  --job-name=debug_wcm --time=00:30:00 --ntasks=1 --cpus-per-task=8 \
+  --mem=24G --gres=gpu:1 --partition=priority --requeue \
+  --output=results/slurm_debug_wcm_%j.out \
+  --wrap='cd \$HOME/uyghurGPT && set -a && source .env && set +a && \
+    export HF_HOME=\$HOME/uyghurGPT/hf_cache && \
+    export HUGGING_FACE_HUB_TOKEN=\$HF_TOKEN && \
+    export CUDA_VISIBLE_DEVICES=0 && \
+    export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && \
+    export PYTHONUNBUFFERED=1 && \
+    \$HOME/micromamba/envs/uyghur_env/bin/python -u scripts/debug_wcm.py \
+      --compare-zeroshot \
+      --out results/debug/wcm_mix50_vs_zs.json'"
 ```
 
-**Pull + log** (same commit for §1 + new row):
+**Decision after pull:**
 
-- `results/run_<id>/experiment_1/artifacts/eval_summary.json`
-- Checkpoint dir: `checkpoints/qwen_mix50/final`
-- Add §2 row `qwen_finetuned_mix50` (or document under §3 bonus table until
-  Task 04 aggregator exists) with FLORES / WCM / C4 vs Mix-20 (Slurm 2768)
-  and `qwen_zeroshot` (30.10 / 9.96).
-- **Do not** enable `UYGHUR_UG2EN_NUM_BEAMS` — eval must match Slurm 2768
-  protocol (rep-penalty only, default beams=1).
+| Mix-50 `majority_class_share_pred` | Reading |
+|------------------------------------|---------|
+| ≥ 0.95 | **Collapse.** §3 bonus annotates the 81 % cell as such; report flags as Mix-50 over-fit signal, not classification competence. |
+| 0.6–0.95 + non-majority F1 ≥ 0.2 | Real (mixed). Keep cell; describe in §05 §8 honestly. |
+| < 0.6 + spread predictions | Real classification. Headline-worthy. |
 
-**Decision after Mix-50 lands:**
+Same script for free zero-shot comparison: `pred_dist` should be diverse
+on `qwen_zeroshot` (which scores 6.33 % — its predictions definitionally
+miss most rows; we want to see *how* they miss).
 
-| UG→EN chrF vs Slurm 2768 (16.81) | Next step |
-|----------------------------------|-----------|
-| **≥ 22** (+5 chrF) | Write up mix trade-off; optional Mix-0 for bracket; skip B1+B2 for now |
-| **18–22** (+1 to +5) | Consider **B2** alone on a new run (direction-stratified `eval_loss`) |
-| **< 18** (no meaningful lift) | **B1 + B2** retrain (`ug2en` row weight 2× + per-direction early stopping) |
+## Qualitative examples — Option B (final inference job)
 
-Full ablation spec: `docs/tasks/bonus/02_qwen_mix_ablation.md`.
+`scripts/qualitative_examples.py` runs 4 variants × 2 directions × 5
+FLORES devtest sentences (default ids `0 1 2 3 4`) and emits both:
 
----
+- `results/reports/qualitative_examples.json` (structured rows)
+- `results/reports/qualitative_examples.md` (4-variant tables per
+  direction; suitable for the report)
 
-## In-flight: exp-0 rep-penalty-only zero-shot sanity gate
+Per-cell content: hypothesis + sentence chrF. Variants reuse the same
+decode paths as §2 (rep-penalty chat for instruct variants; 3-shot
+base-LM continuation for `cute_llama_p`). FT adapter defaults to the
+Mix-20 `run_20260524_020432` checkpoint that produces the §2 row; pass
+`--ft-adapter` to swap if needed.
 
-> Submitted **before** commit `9b6141d`. Cluster code: rep-penalty +
-> `no_repeat_ngram_size` on UG→EN; **no** beam env hook.
-
-- **Pass:** `qwen_zeroshot` UG→EN within ±0.5 of **30.10**; `llama_zeroshot`
-  UG→EN within ±0.5 of **4.71**.
-- **Pull + log:** §1 entry; closes Slurm 2768 open sanity item.
-- **Do not cancel** for Mix-50 — orthogonal measurement.
-
----
-
-## Optional — A2 diagnostic only (does not change §2)
-
-Runs while Mix-50 trains or after rsync. Informs whether the adapter still
-has a UG→EN circuit (prompt vs weights); **not** a substitute for Mix-50.
+**Cost:** ~15 min wall (10 generations per variant; cute_llama_p
+dominates at ~30 s/sentence in fp16). 1 h walltime is generous.
 
 ```bash
-ssh ju-compute-server 'cd ~/uyghurGPT && \
-  $HOME/micromamba/envs/uyghur_env/bin/python scripts/debug_ug2en.py \
-    --fewshot-k 3 -n 50 --compare-zeroshot \
-    --out results/debug/ug2en_fewshot_$(date -u +%Y%m%d_%H%M%S).json'
+ssh ju-compute-server "cd ~/uyghurGPT && mkdir -p results results/reports && sbatch \
+  --job-name=qualitative --time=01:00:00 --ntasks=1 --cpus-per-task=8 \
+  --mem=24G --gres=gpu:1 --partition=priority --requeue \
+  --output=results/slurm_qualitative_%j.out \
+  --wrap='cd \$HOME/uyghurGPT && set -a && source .env && set +a && \
+    export HF_HOME=\$HOME/uyghurGPT/hf_cache && \
+    export HUGGING_FACE_HUB_TOKEN=\$HF_TOKEN && \
+    export CUDA_VISIBLE_DEVICES=0 && \
+    export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && \
+    export PYTHONUNBUFFERED=1 && \
+    \$HOME/micromamba/envs/uyghur_env/bin/python -u scripts/qualitative_examples.py'"
 ```
 
-Log mean chrF + failure modes in §1 (diagnostic paragraph only).
+**Pull:**
 
-| A2 FT mean chrF (n=50) | Note for report |
-|------------------------|-----------------|
-| ≥ 27 | Circuit intact; Mix-50 + prompt shape matter |
-| 22–27 | Partly intact |
-| < 22 | Weights shifted; Mix-50 / B1+B2 more urgent |
+```bash
+rsync -avz ju-compute-server:~/uyghurGPT/results/reports/qualitative_examples.{json,md} results/reports/ \
+  && rsync -avz ju-compute-server:~/uyghurGPT/results/slurm_qualitative_*.out results/
+```
 
----
-
-## Deferred — A1 beam search (eval-protocol change)
-
-Code remains in repo (`UYGHUR_UG2EN_NUM_BEAMS`, default **off**). **Paused**
-because adopting beams in §2 requires parallel re-eval of **all** chat-path
-variants (`qwen_zeroshot`, `llama_zeroshot`, `qwen_finetuned`, and ideally
-a few-shot-path policy for `cute_llama_p`) — otherwise the table is biased.
-
-Revisit only if Mix-50 + B1/B2 plateau and we need a decoding-only lift with
-full parity re-run budget (~3 h).
+`results/` is gitignored — once pulled, copy `qualitative_examples.md`
+into `docs/qualitative_examples.md` (or `git add -f`) if the markdown
+table needs to ship with the report.
 
 ---
 
-## Deferred — B1 + B2 (retrain mechanics)
+## Write-up phase (no more GPU jobs)
 
-See Mix-50 decision table above. Spec: `PROJECT_REFINEMENT.md` §14.
+After the three pulls above (`2771`, `debug_wcm`, `qualitative_examples`):
+
+1. **§1 + §3 log updates** (`PROJECT_RESULTS.md`, ~30 min).
+2. **Task 05** — `docs/05_results_analysis.md` (8-section structure per
+   `docs/tasks/05_results_analysis.md`).
+3. **Task 06** — final report / slides.
+4. **Optional Task 04** — `scripts/aggregate_results.py` (§2 already
+   serves as the canonical table; skippable).
+
+---
+
+## Deferred (do not run unless write-up demands a number)
+
+- **A1 beams** — code-only, default off. §2 would require parallel re-run
+  of all chat-path variants. Don't enable.
+- **B1 + B2 retrain** — Mix-50 sits at UG→EN 17.97 (just under the
+  "≥ 18" line); B1+B2 was the next training fix if we kept going.
+- **Mix-0 / Mix-10 bracket** — `docs/tasks/bonus/02_qwen_mix_ablation.md`.
+- **A2 chat-fewshot diagnostic** — not needed for §2; useful only as
+  side-evidence in the report if there's time.
+- **200 k / 300 k pair count** — Mix-20 early-stopped at 1.48 epochs;
+  quantity not the binding constraint.
 
 ---
 
 ## Done (remove when read)
 
+- ~~Mix-50 retrain~~ — `run_20260527_185416`, Slurm 2770; UG→EN
+  9.39 → 17.97 (+1.16 over Mix-20).
 - ~~Slurm 2768 `qwen_finetuned` UG→EN re-eval~~ — §2 UG→EN **16.8079**.
 - ~~Slurm 2766 `debug_ug2en`~~ — mechanism in §14.
 - ~~Training-data audit~~ — balanced `ug2en`/`en2ug`.
