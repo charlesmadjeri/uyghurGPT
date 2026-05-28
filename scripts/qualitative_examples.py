@@ -8,16 +8,15 @@ per-sentence hypotheses after computing corpus chrF, so they are not
 preserved by the main eval pipeline; this script regenerates them on a
 small fixed FLORES devtest subset and emits a JSON + markdown table.
 
-Variant matrix (matches ``shared.evaluation._variant_specs``):
+Variant matrix:
 
 - ``qwen_zeroshot`` — Qwen2.5-7B-Instruct, no adapter, chat template.
 - ``llama_zeroshot`` — LLaMA-3.1-8B-Instruct, no adapter, chat template.
-- ``qwen_finetuned`` — Qwen2.5-7B-Instruct + Mix-20 LoRA adapter
-  (``run_20260524_020432``), chat template. Decoder = the same path
-  used by Slurm 2768 (direction-conditional repetition penalty UG→EN).
-- ``cute_llama_p`` — CMLI-NLP/CUTE-Llama, ``CUTE-Llama-Parallel``
-  subfolder, fp16, base-LM 3-shot continuation prompt with FLORES-dev
-  exemplars.
+- ``qwen_finetuned_mix20`` — Qwen + Mix-20 LoRA (``run_20260524_020432``);
+  §2 core row. Same decode path as Slurm 2768 (rep-penalty UG→EN).
+- ``qwen_finetuned_mix50`` — Qwen + Mix-50 LoRA (``run_20260527_185416``);
+  §3 bonus ablation row.
+- ``cute_llama_p`` — CMLI-NLP/CUTE-Llama-Parallel, fp16, 3-shot base-LM.
 
 For each variant and each picked FLORES devtest sentence the script
 generates an EN→UG and a UG→EN hypothesis, computes sentence-level
@@ -25,7 +24,7 @@ chrF against the FLORES reference, and writes:
 
 - ``results/reports/qualitative_examples.json`` — full structured rows.
 - ``results/reports/qualitative_examples.md`` — per-direction tables of
-  4 variants × N sentences (suitable for copy-paste / \\include into the
+  all variants × N sentences (suitable for copy-paste / \\include into the
   final report).
 
 Reproducibility: the picked indices are FLORES devtest row positions
@@ -44,15 +43,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_FT_ADAPTER = (
+DEFAULT_MIX20_ADAPTER = (
     REPO_ROOT
     / "results/run_20260524_020432/experiment_1/checkpoints/qwen_mix20/final"
+)
+DEFAULT_MIX50_ADAPTER = (
+    REPO_ROOT
+    / "results/run_20260527_185416/experiment_1/checkpoints/qwen_mix50/final"
 )
 DEFAULT_INDICES = (0, 1, 2, 3, 4)
 ALL_VARIANTS = (
     "qwen_zeroshot",
     "llama_zeroshot",
-    "qwen_finetuned",
+    "qwen_finetuned_mix20",
+    "qwen_finetuned_mix50",
     "cute_llama_p",
 )
 
@@ -223,12 +227,21 @@ def main() -> int:
         help="FLORES+ devtest row indices (0-indexed). Default: 0 1 2 3 4.",
     )
     parser.add_argument(
-        "--ft-adapter",
+        "--mix20-adapter",
         type=Path,
-        default=DEFAULT_FT_ADAPTER,
+        default=DEFAULT_MIX20_ADAPTER,
         help=(
-            "Path to qwen_finetuned LoRA adapter "
-            f"(default: {DEFAULT_FT_ADAPTER.relative_to(REPO_ROOT)})."
+            "Mix-20 LoRA adapter for qwen_finetuned_mix20 "
+            f"(default: {DEFAULT_MIX20_ADAPTER.relative_to(REPO_ROOT)})."
+        ),
+    )
+    parser.add_argument(
+        "--mix50-adapter",
+        type=Path,
+        default=DEFAULT_MIX50_ADAPTER,
+        help=(
+            "Mix-50 LoRA adapter for qwen_finetuned_mix50 "
+            f"(default: {DEFAULT_MIX50_ADAPTER.relative_to(REPO_ROOT)})."
         ),
     )
     parser.add_argument(
@@ -258,13 +271,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if "qwen_finetuned" in args.variants and not args.ft_adapter.is_dir():
-        print(f"FT adapter not found: {args.ft_adapter}", file=sys.stderr)
-        print(
-            "Drop qwen_finetuned from --variants or pass --ft-adapter PATH.",
-            file=sys.stderr,
-        )
-        return 1
+    adapter_checks = (
+        ("qwen_finetuned_mix20", args.mix20_adapter, "--mix20-adapter"),
+        ("qwen_finetuned_mix50", args.mix50_adapter, "--mix50-adapter"),
+    )
+    for variant, adapter_path, flag in adapter_checks:
+        if variant in args.variants and not adapter_path.is_dir():
+            print(f"Adapter not found for {variant}: {adapter_path}", file=sys.stderr)
+            print(f"Drop {variant} from --variants or pass {flag} PATH.", file=sys.stderr)
+            return 1
 
     from shared.evaluation import (
         load_eval_model,
@@ -309,12 +324,21 @@ def main() -> int:
                 "prompt_style": "chat",
             }
         )
-    if "qwen_finetuned" in args.variants:
+    if "qwen_finetuned_mix20" in args.variants:
         variant_specs.append(
             {
-                "label": "qwen_finetuned",
+                "label": "qwen_finetuned_mix20",
                 "model": "qwen",
-                "adapter": args.ft_adapter,
+                "adapter": args.mix20_adapter,
+                "prompt_style": "chat",
+            }
+        )
+    if "qwen_finetuned_mix50" in args.variants:
+        variant_specs.append(
+            {
+                "label": "qwen_finetuned_mix50",
+                "model": "qwen",
+                "adapter": args.mix50_adapter,
                 "prompt_style": "chat",
             }
         )
@@ -377,11 +401,11 @@ def main() -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "flores_split": "devtest",
         "indices": args.indices,
-        "ft_adapter": (
-            str(args.ft_adapter.resolve())
-            if "qwen_finetuned" in args.variants
-            else None
-        ),
+        "ft_adapters": {
+            variant: str(adapter.resolve())
+            for variant, adapter, _ in adapter_checks
+            if variant in args.variants
+        },
         "variant_specs": [
             {**spec, "adapter": str(spec["adapter"]) if spec["adapter"] else None}
             for spec in variant_specs

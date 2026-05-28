@@ -62,33 +62,27 @@ finding.
 
 ## Qualitative examples — Option B (final inference job, **re-submission**)
 
-`scripts/qualitative_examples.py` runs 4 variants × 2 directions × 5
-FLORES devtest sentences (default ids `0 1 2 3 4`) and emits both:
+`scripts/qualitative_examples.py` runs **5 variants** × 2 directions × 5
+FLORES devtest sentences (default ids `0 1 2 3 4`):
 
-- `results/reports/qualitative_examples.json` (structured rows)
-- `results/reports/qualitative_examples.md` (4-variant tables per
-  direction; suitable for the report)
+| Variant | Adapter |
+|---------|---------|
+| `qwen_zeroshot` / `llama_zeroshot` | none |
+| `qwen_finetuned_mix20` | `run_20260524_020432/.../qwen_mix20/final` (§2) |
+| `qwen_finetuned_mix50` | `run_20260527_185416/.../qwen_mix50/final` (§3) |
+| `cute_llama_p` | none (fp16 base-LM few-shot) |
 
-Per-cell content: hypothesis + sentence chrF. Variants reuse the same
-decode paths as §2 (rep-penalty chat for instruct variants; 3-shot
-base-LM continuation for `cute_llama_p`). FT adapter defaults to the
-Mix-20 `run_20260524_020432` checkpoint that produces the §2 row; pass
-`--ft-adapter` to swap if needed.
+Emits `results/reports/qualitative_examples.{json,md}`.
 
-**Cost:** ~15 min wall (10 generations per variant; cute_llama_p
-dominates at ~30 s/sentence in fp16). 1 h walltime is generous.
+**Slurm 2787 (pulled).** OOM fix worked; log shows 4 variants only
+(label `qwen_finetuned` = Mix-20). Mean sentence chrF: mix20 EN→UG
+12.25 / UG→EN 17.81. **Re-run** after rsync to add `qwen_finetuned_mix50`
+(5-variant table). Incremental option if you want Mix-50 only:
+`--variants qwen_finetuned_mix50 --out-json results/reports/qualitative_mix50.json`
+(then merge manually or re-run full default).
 
-**Slurm 2786 failure & fix.** `cute_llama_p` OOM'd in
-`caching_allocator_warmup` after three prior 4-bit + LoRA loads
-fragmented the 24 GB MIG (no contiguous 13 GB block for the warmup's
-one-shot `torch.empty`). The script now (a) loads `cute_llama_p`
-**first** while the allocator is fragment-free, (b) deletes the
-tokenizer reference between variants, and (c) calls `gc.collect()`
-before `torch.cuda.empty_cache()`. JSON / markdown output order is
-unchanged (still `qwen_zeroshot, llama_zeroshot, qwen_finetuned,
-cute_llama_p`). Three earlier variants did complete in 2786 (see log
-lines 9-31) — outputs were lost because the process crashed before
-writing JSON, so a clean re-run is required.
+**Cost:** ~20–25 min wall (12 generations per FT variant; cute_llama_p
+~30 s/sentence fp16). Use **1:30:00** walltime.
 
 ```bash
 rsync -avz --progress \
@@ -99,7 +93,7 @@ rsync -avz --progress \
   ./ ju-compute-server:~/uyghurGPT/
 
 ssh ju-compute-server "cd ~/uyghurGPT && mkdir -p results results/reports && sbatch \
-  --job-name=qualitative --time=01:00:00 --ntasks=1 --cpus-per-task=8 \
+  --job-name=qualitative --time=01:30:00 --ntasks=1 --cpus-per-task=8 \
   --mem=24G --gres=gpu:1 --partition=priority --requeue \
   --output=results/slurm_qualitative_%j.out \
   --wrap='cd \$HOME/uyghurGPT && set -a && source .env && set +a && \
