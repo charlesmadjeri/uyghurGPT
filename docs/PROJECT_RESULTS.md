@@ -18,7 +18,10 @@ the numbers moved**. It has three sections:
 
 - `qwen_zeroshot` — Qwen2.5-7B-Instruct, zero-shot (no adapter), chat template.
 - `llama_zeroshot` — LLaMA-3.1-8B-Instruct, zero-shot, chat template.
-- `qwen_finetuned` — Qwen2.5-7B-Instruct + the run's QLoRA adapter (Mix-20).
+- `qwen_finetuned` — Qwen2.5-7B-Instruct + Mix-20 LoRA (`run_20260524_020432`).
+- `qwen_finetuned_mix50` — same base + Mix-50 LoRA (`run_20260527_185416`);
+  bonus ablation (more FLAN English-only in the training mix). Listed in
+  §2 for head-to-head comparison with Mix-20; Mix-0 / Mix-10 stay in §3.
 - `cute_llama_p` — CMLI-NLP/CUTE-Llama, `CUTE-Llama-Parallel` subfolder, fp16, base-LM few-shot continuation prompt.
 
 ## Metrics
@@ -393,37 +396,47 @@ Latest measured number per cell. `pending` = the numerical value at the
 current protocol has not yet been written by a successful Slurm run;
 the source run for each populated cell is noted under the table.
 
+The table has the **four pre-registered comparison variants** (two
+zero-shot instruct models, one fine-tuned Qwen, one CUTE baseline) plus
+**Mix-50** as a fifth Qwen fine-tune row. Historically Mix-50 lived only
+in §3 because it was filed as a bonus ablation and the eval pipeline
+still labels both adapters `qwen_finetuned` in `eval_summary.json` —
+distinguished by **run id**, not variant name. For the report, §2 now
+lists Mix-20 and Mix-50 side by side; §3 keeps Mix-0 / Mix-10 and other
+stretch goals.
+
 | Variant | FLORES EN→UG chrF | EN→UG BLEU | FLORES UG→EN chrF | UG→EN BLEU | WCM Uyghur acc. | C4 EN PPL |
 |---------|-------------------|------------|-------------------|------------|------------------|-----------|
-| `qwen_zeroshot`   | 9.963       | 0.2389 | **29.5635** | 3.4428 | 6.33 % (19 / 300, constrained-LL)      | 16.5949 |
-| `llama_zeroshot`  | 0.8447      | 0.449  | 15.9577     | 2.5033 | 3.00 % (9 / 300, constrained-LL)       | **13.6891** |
-| `qwen_finetuned`  | **14.1762** | 0.0354 | 16.8079     | 0.1794 | **21.00 %** (63 / 300, constrained-LL) | 16.1667 |
-| `cute_llama_p`    | 6.8773      | 0.2638 | 23.0881     | 1.7748 | 15.33 % (46 / 300, base_lm constrained-LL) | **13.0148** |
+| `qwen_zeroshot`        | 9.963       | 0.2389 | **29.5635** | 3.4428 | 6.33 % (19 / 300, constrained-LL)      | 16.5949 |
+| `llama_zeroshot`       | 0.8447      | 0.449  | 15.9577     | 2.5033 | 3.00 % (9 / 300, constrained-LL)       | **13.6891** |
+| `qwen_finetuned` (Mix-20) | **14.1762** | 0.0354 | 16.8079  | 0.1794 | 21.00 % (63 / 300, constrained-LL)     | 16.1667 |
+| `qwen_finetuned_mix50` | 14.0649     | 0.0215 | **17.9662** | 0.2463 | 81.00 % (243 / 300) †                  | 15.9124 |
+| `cute_llama_p`         | 6.8773      | 0.2638 | 23.0881     | 1.7748 | 15.33 % (46 / 300, base_lm constrained-LL) | **13.0148** |
 
-All four FLORES rows are under the same decoder
+† Mix-50 WCM: raw acc. near the 85.3 % majority floor; **balanced acc.
+(macro recall) = 0.258**, macro F1 = 0.220 (Slurm 2785). See macro
+sub-table below and §3 footnote for the full audit.
+
+All instruct-model FLORES rows (Qwen / LLaMA zero-shot and both
+fine-tunes) are under the same decoder
 (`generate_translation` with direction-conditional
 `repetition_penalty=1.15` + `no_repeat_ngram_size=4` on English target);
 all four WCM rows are under constrained log-likelihood scoring over the
 6-label set. Apples-to-apples across the table.
 
-WCM macro metrics on the same predictions (from `scripts/debug_wcm.py`
-artifacts; `qwen_finetuned` row here is the Mix-20 cell measured at
-Slurm 2744 / 2768, **not** the Mix-50 audit which lives in §3):
+WCM macro metrics (from `scripts/debug_wcm.py` where available):
 
 | Variant | Raw acc. | Balanced acc. (macro recall) | Macro F1 |
 |---|---|---|---|
 | `qwen_zeroshot`  | 6.33 %  | 0.271 | 0.103 |
-| `llama_zeroshot` | 3.00 %  | _pending_ (no debug_wcm artifact) | _pending_ |
-| `qwen_finetuned` (Mix-20) | 21.00 % | _pending_ (Mix-20 not yet re-audited) | _pending_ |
+| `llama_zeroshot` | 3.00 %  | _pending_ | _pending_ |
+| `qwen_finetuned` (Mix-20) | 21.00 % | _pending_ | _pending_ |
+| `qwen_finetuned_mix50` | 81.00 % | 0.258 | 0.220 |
 | `cute_llama_p`   | 15.33 % | _pending_ | _pending_ |
 
-The Mix-50 audit numbers (balanced acc. 0.258, macro F1 0.220) live in
-§3. The Mix-20 / `llama_zs` / `cute_llama_p` rows above are marked
-pending because `debug_wcm` was only run on the Mix-50 vs `qwen_zs`
-pair (Slurm 2785); no additional GPU run is required to fill them
-since the per-prediction artifacts already exist in
-`results/run_<id>/.../eval_wcm_*.json` — only an offline script
-extension is needed.
+Slurm 2785 audited Mix-50 vs `qwen_zeroshot` only. Mix-20 /
+`llama_zs` / `cute_llama_p` macro rows are _pending_ but need no new GPU
+eval — only another `debug_wcm.py` pass on the existing adapters.
 
 Sources for populated cells (latest measurement per metric):
 
@@ -431,7 +444,8 @@ Sources for populated cells (latest measurement per metric):
 |---|---|---|---|
 | `qwen_zeroshot`  | `run_20260528_103619` (Slurm 2771, rep-penalty UG→EN) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
 | `llama_zeroshot` | `run_20260528_103619` (Slurm 2771, rep-penalty UG→EN) | `run_20260526_223852` (Slurm 2749, constrained-LL) | `run_20260526_223852` (Slurm 2749) |
-| `qwen_finetuned` | `run_20260524_020432` (Slurm 2768, rep-penalty UG→EN) | `run_20260524_020432` (Slurm 2744, constrained-LL) | `run_20260524_020432` (Slurm 2744) |
+| `qwen_finetuned` (Mix-20) | `run_20260524_020432` (Slurm 2768, rep-penalty UG→EN) | `run_20260524_020432` (Slurm 2744, constrained-LL) | `run_20260524_020432` (Slurm 2744) |
+| `qwen_finetuned_mix50` | `run_20260527_185416` (Slurm 2770, rep-penalty UG→EN) | `run_20260527_185416` (Slurm 2770, constrained-LL) | `run_20260527_185416` (Slurm 2770) |
 | `cute_llama_p`   | `run_20260526_224102` (Slurm 2750) | `run_20260526_224102` (Slurm 2750, base_lm constrained-LL) | `run_20260526_224102` (Slurm 2750) |
 
 ### Analysis (current best estimate)
@@ -515,35 +529,25 @@ Remaining items are reporting:
 
 ---
 
-## 3. Bonus experiments (stretch — placeholders)
+## 3. Bonus experiments (stretch)
 
-Stretch goals from `docs/tasks/bonus/`. All cells `pending` until the
-corresponding Slurm runs land. None of these are required for the
-**Core** evaluation in §2.
+Stretch goals from `docs/tasks/bonus/`. **Mix-50 is also in §2** (full
+FLORES / WCM / PPL row); this section holds Mix-0 / Mix-10 and other
+deferred cells.
 
 | Variant | Source task | FLORES EN→UG chrF | FLORES UG→EN chrF | WCM Uyghur acc. (raw) | C4 EN PPL | Status |
 |---|---|---|---|---|---|---|
 | `llama_finetuned` (Mix-20) | `bonus/01_experiment_3_llama_mix20_finetune.md` | _pending_ | _pending_ | _pending_ | _pending_ | not started |
 | `qwen_finetuned_mix0`      | `bonus/02_qwen_mix_ablation.md`                  | _pending_ | _pending_ | _pending_ | _pending_ | not started |
 | `qwen_finetuned_mix10`     | `bonus/02_qwen_mix_ablation.md`                  | _pending_ | _pending_ | _pending_ | _pending_ | not started |
-| `qwen_finetuned_mix50`     | `bonus/02_qwen_mix_ablation.md`                  | **14.0649** | **17.9662** | 81.00 % (243 / 300) † | 15.9124 | **done** (Slurm 2770 / `run_20260527_185416`) |
+| `qwen_finetuned_mix50`     | `bonus/02_qwen_mix_ablation.md`                  | → §2 | → §2 | → §2 | → §2 | **done** (Slurm 2770) |
 | `qwen_zeroshot_5shot`      | `bonus/04_qwen_5shot_baseline.md`                | _pending_ | _pending_ | _pending_ | _pending_ | not started |
 
-† **Mix-50 WCM caveat.** Raw accuracy 81.00 % sits just below the
-85.3 % majority-class floor. Class-balance-invariant metrics from
-Slurm 2785 (`scripts/debug_wcm.py`): **balanced accuracy (macro
-recall) = 0.258** vs zero-shot 0.271 (uniform floor 0.167); **macro
-F1 = 0.220** vs zero-shot 0.103. Mix-50 learned the label-1 prior +
-the label-4 distinction (per-class recall `[0, 0.90, 0, 0.65, 0, 0]`);
-zero TPs on labels 0/3/6/9. Real lift on calibration and macro F1,
-no broad classification competence yet.
-
-**Mix-50 vs Mix-20 (head-to-head FLORES).** UG→EN chrF +1.16 (17.97
-vs 16.81), EN→UG chrF essentially unchanged (14.06 vs 14.18). Closes
-~5.5 % of the 13.29 chrF post-rep-penalty UG→EN gap to `qwen_zeroshot`
-29.56. Decision (see TODO): Mix-50 promoted to §3 with full numbers,
-B1 / B2 retrains deferred — further training-side fixes are
-out-of-scope for the final report.
+**Mix-50 vs Mix-20 (head-to-head, §2).** UG→EN chrF +1.16 (17.97 vs
+16.81), EN→UG essentially unchanged (14.06 vs 14.18). WCM raw 81 % vs
+21 % is **not** apples-to-apples competence — macro recall 0.258 vs
+zero-shot 0.271 (parity); macro F1 0.220 vs 0.103 (×2.1). B1 / B2
+retrains deferred.
 
 ### MiLiC-Eval (separate benchmark suite — deferred to final report)
 
