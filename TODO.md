@@ -21,49 +21,46 @@ in the pulled log; WCM + PPL still to come.
 - **Log:** §1 entry (single paragraph) closing Slurm 2768's open sanity
   item.
 
-## Verification — WCM Mix-50 audit (debug_wcm.py)
+## Verification — WCM Mix-50 audit (debug_wcm.py) — **Pulled, verdict: real-but-majority-biased**
 
-Mix-50 reported WCM **81.00 %** (243/300). Majority-class floor is
-**85.3 %** (256/300 = label `1`). `scripts/debug_wcm.py` records the
-full per-label log-prob distribution + confusion matrix to decide
-whether this is real classification or majority-class collapse.
+Slurm 2785 (`results/debug/wcm_mix50_vs_zs.json`, log
+`results/slurm_debug_wcm_2785.out`). Mix-50 falls in the **middle** row
+of the decision table: not collapse, but driven by the label-1 prior.
 
-```bash
-rsync -avz --progress \
-  --exclude=results/ --exclude=results.archive/ --exclude=__pycache__/ \
-  --exclude='*.pyc' --exclude=.git/ --exclude=.venv/ --exclude='*.ipynb' \
-  --exclude=docs/papers/ --exclude=dataset/ --exclude=models/ \
-  --exclude=checkpoints/ \
-  ./ ju-compute-server:~/uyghurGPT/
+| Metric | `qwen_finetuned` (Mix-50) | `qwen_zeroshot` |
+|--------|---------------------------|-----------------|
+| Accuracy | 0.810 (243/300) | 0.063 (19/300) |
+| Always-predict-majority floor | 0.853 | 0.853 |
+| `pred_dist` (top) | `1: 249, 4: 44, …` | `9: 164, 4: 94, …` |
+| `majority_class_share_pred` | **0.830** | 0.023 |
+| `majority_class_collapse_detected` | **False** (threshold ≥ 0.95) | False |
+| Acc on majority rows (label 1) | 0.898 | 0.023 |
+| Acc on non-majority rows | **0.296** | **0.296** |
+| Label-1 F1 | 0.911 (P 0.924, R 0.898) | 0.046 |
+| Label-4 F1 | 0.406 (P 0.296, R 0.650) | 0.070 |
+| Other labels (0/3/6/9) F1 | **0 / None** (≤ 3 TP combined) | mostly 0 |
+| Mean top-1 − top-2 log-prob margin | 0.29 (low confidence) | 1.04 (confidently wrong) |
 
-ssh ju-compute-server "cd ~/uyghurGPT && mkdir -p results results/debug && sbatch \
-  --job-name=debug_wcm --time=00:30:00 --ntasks=1 --cpus-per-task=8 \
-  --mem=24G --gres=gpu:1 --partition=priority --requeue \
-  --output=results/slurm_debug_wcm_%j.out \
-  --wrap='cd \$HOME/uyghurGPT && set -a && source .env && set +a && \
-    export HF_HOME=\$HOME/uyghurGPT/hf_cache && \
-    export HUGGING_FACE_HUB_TOKEN=\$HF_TOKEN && \
-    export CUDA_VISIBLE_DEVICES=0 && \
-    export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && \
-    export PYTHONUNBUFFERED=1 && \
-    \$HOME/micromamba/envs/uyghur_env/bin/python -u scripts/debug_wcm.py \
-      --compare-zeroshot \
-      --out results/debug/wcm_mix50_vs_zs.json'"
-```
+**Reading.** §3 cell stays — 81 % is real, not collapse — but the report
+must caveat that **non-majority recall is unchanged from zero-shot**
+(both at 13/44 = 29.55 %). The +75 pp lift comes entirely from
+"default to label 1 instead of guessing label 9". Mix-50 has learned
+the prior + the **label-4** sub-distinction (F1 = 0.41), and nothing
+else. Label-1 + label-4 cover 276/300 = 92 % of the gold support, so
+two-class competence ≈ overall accuracy.
 
-**Decision after pull:**
+Zero-shot is the mirror image: it almost never picks label 1 (recall
+2.3 %) but over-fires label 9 (164 predictions for 6 true rows,
+recall 83.3 %). Two completely different failure modes converge on
+the same 29.55 % non-majority accuracy — coincidence, not signal.
 
-| Mix-50 `majority_class_share_pred` | Reading |
-|------------------------------------|---------|
-| ≥ 0.95 | **Collapse.** §3 bonus annotates the 81 % cell as such; report flags as Mix-50 over-fit signal, not classification competence. |
-| 0.6–0.95 + non-majority F1 ≥ 0.2 | Real (mixed). Keep cell; describe in §05 §8 honestly. |
-| < 0.6 + spread predictions | Real classification. Headline-worthy. |
+**For the write-up.** Quote both lines in `PROJECT_RESULTS.md` §3
+caveats and Task 05 §8 (negative results): "Mix-50's WCM headline is
+mostly the label-1 prior; non-majority recall is identical to
+zero-shot." This is honest and turns a suspicious cell into a clean
+finding.
 
-Same script for free zero-shot comparison: `pred_dist` should be diverse
-on `qwen_zeroshot` (which scores 6.33 % — its predictions definitionally
-miss most rows; we want to see *how* they miss).
-
-## Qualitative examples — Option B (final inference job)
+## Qualitative examples — Option B (final inference job, **re-submission**)
 
 `scripts/qualitative_examples.py` runs 4 variants × 2 directions × 5
 FLORES devtest sentences (default ids `0 1 2 3 4`) and emits both:
@@ -81,7 +78,26 @@ Mix-20 `run_20260524_020432` checkpoint that produces the §2 row; pass
 **Cost:** ~15 min wall (10 generations per variant; cute_llama_p
 dominates at ~30 s/sentence in fp16). 1 h walltime is generous.
 
+**Slurm 2786 failure & fix.** `cute_llama_p` OOM'd in
+`caching_allocator_warmup` after three prior 4-bit + LoRA loads
+fragmented the 24 GB MIG (no contiguous 13 GB block for the warmup's
+one-shot `torch.empty`). The script now (a) loads `cute_llama_p`
+**first** while the allocator is fragment-free, (b) deletes the
+tokenizer reference between variants, and (c) calls `gc.collect()`
+before `torch.cuda.empty_cache()`. JSON / markdown output order is
+unchanged (still `qwen_zeroshot, llama_zeroshot, qwen_finetuned,
+cute_llama_p`). Three earlier variants did complete in 2786 (see log
+lines 9-31) — outputs were lost because the process crashed before
+writing JSON, so a clean re-run is required.
+
 ```bash
+rsync -avz --progress \
+  --exclude=results/ --exclude=results.archive/ --exclude=__pycache__/ \
+  --exclude='*.pyc' --exclude=.git/ --exclude=.venv/ --exclude='*.ipynb' \
+  --exclude=docs/papers/ --exclude=dataset/ --exclude=models/ \
+  --exclude=checkpoints/ \
+  ./ ju-compute-server:~/uyghurGPT/
+
 ssh ju-compute-server "cd ~/uyghurGPT && mkdir -p results results/reports && sbatch \
   --job-name=qualitative --time=01:00:00 --ntasks=1 --cpus-per-task=8 \
   --mem=24G --gres=gpu:1 --partition=priority --requeue \
@@ -90,10 +106,15 @@ ssh ju-compute-server "cd ~/uyghurGPT && mkdir -p results results/reports && sba
     export HF_HOME=\$HOME/uyghurGPT/hf_cache && \
     export HUGGING_FACE_HUB_TOKEN=\$HF_TOKEN && \
     export CUDA_VISIBLE_DEVICES=0 && \
-    export PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync && \
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \
     export PYTHONUNBUFFERED=1 && \
     \$HOME/micromamba/envs/uyghur_env/bin/python -u scripts/qualitative_examples.py'"
 ```
+
+Note: `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is a second
+belt-and-braces fragmentation guard (other jobs use
+`backend:cudaMallocAsync`; here the warmup wants contiguous space so
+the expandable-segments allocator is the safer pick).
 
 **Pull:**
 
@@ -110,9 +131,13 @@ table needs to ship with the report.
 
 ## Write-up phase (no more GPU jobs)
 
-After the three pulls above (`2771`, `debug_wcm`, `qualitative_examples`):
+After the two remaining pulls (`2771` + the
+qualitative re-submission; `debug_wcm` already analysed above):
 
-1. **§1 + §3 log updates** (`PROJECT_RESULTS.md`, ~30 min).
+1. **§1 + §3 log updates** (`PROJECT_RESULTS.md`, ~30 min). Include
+   the WCM real-but-majority-biased verdict as a caveat under the
+   81 % cell; quote the 29.55 % non-majority recall identity vs
+   zero-shot.
 2. **Task 05** — `docs/05_results_analysis.md` (8-section structure per
    `docs/tasks/05_results_analysis.md`).
 3. **Task 06** — final report / slides.
